@@ -25,6 +25,9 @@ const emit = defineEmits<{
   (e: 'saved'): void
 }>()
 
+/** 商品三态,与后端 ProductService.PRODUCT_STATUSES 一致 */
+const PRODUCT_STATUSES = ['在售', '清仓中', '停售']
+
 const parsing = ref(false)
 const saving = ref(false)
 const fileName = ref('')
@@ -155,6 +158,7 @@ function actionChip(action?: string) {
       <b>①选文件(自动解析)→ ②在下面核对/改错 → ③确认入档</b>。
       编号已存在的走<b>更新</b>(表里给了值的字段才覆盖);建档同时把「后台编号+条码」绑成别名,
       待绑队列里对得上的会一起消掉。
+      <b>状态留空</b>=新建按「在售」建档、更新保持原状态不动;填了才流转(进清仓会记清仓起算日)。
     </p>
 
     <div class="ledger-card" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap">
@@ -244,6 +248,19 @@ function actionChip(action?: string) {
       </el-table-column>
       <el-table-column label="机内上限" width="90">
         <template #default="{ row }"><el-input v-model="row.minDisplayQty" size="small" type="number" /></template>
+      </el-table-column>
+      <!-- 留空是有意义的:新建按「在售」,更新保持原状态不动,所以给 clearable 而不是默认选中 -->
+      <el-table-column label="状态" width="110">
+        <template #default="{ row }">
+          <el-select
+            v-model="row.productStatus"
+            size="small"
+            clearable
+            :placeholder="row.action === '更新' ? '不变' : '在售'"
+          >
+            <el-option v-for="s in PRODUCT_STATUSES" :key="s" :label="s" :value="s" />
+          </el-select>
+        </template>
       </el-table-column>
       <el-table-column label="操作" width="60" fixed="right">
         <template #default="{ row }">

@@ -285,6 +285,86 @@ class ProductImportServiceTest {
         assertEquals("SP101", resp.getRows().get(0).getSkuCode());
     }
 
+    // ---------- 状态列 ----------
+
+    @Test
+    void 状态列各种写法归一到三态_认不出的整行报错() {
+        byte[] xlsx = xlsx(
+                new String[]{"商品编号", "商品名称", "状态"},
+                new String[]{"SP101", "甲", "上架"},
+                new String[]{"SP102", "乙", "清仓"},
+                new String[]{"SP103", "丙", "下架"},
+                new String[]{"SP104", "丁", "半价甩卖"});
+
+        ProductImportDtos.ParseResp resp = service.parse("商品列表.xlsx", xlsx);
+
+        assertEquals("在售", resp.getRows().get(0).getProductStatus());
+        assertEquals("清仓中", resp.getRows().get(1).getProductStatus());
+        assertEquals("停售", resp.getRows().get(2).getProductStatus());
+        assertEquals(ProductImportDtos.ACTION_ERROR, resp.getRows().get(3).getAction());
+        assertTrue(resp.getRows().get(3).getErrorMsg().contains("半价甩卖"),
+                resp.getRows().get(3).getErrorMsg());
+        assertEquals(1, resp.getErrorCount());
+    }
+
+    @Test
+    void 没有状态列时给出提示且不误判成错误行() {
+        byte[] xlsx = xlsx(
+                new String[]{"商品编号", "商品名称"},
+                new String[]{"SP101", "甲"});
+
+        ProductImportDtos.ParseResp resp = service.parse("商品列表.xlsx", xlsx);
+
+        assertEquals(0, resp.getErrorCount());
+        assertNull(resp.getRows().get(0).getProductStatus(), "状态列缺席时不该编一个状态出来");
+        assertTrue(resp.getWarnings().stream().anyMatch(w -> w.contains("保持原状态不变")),
+                resp.getWarnings().toString());
+    }
+
+    @Test
+    void 新建非在售的商品走changeStatus_而不是直接塞状态() {
+        // 清仓中要记 clearance_since(补货引擎「清仓超30天三选一」的计时起点),
+        // 只有 changeStatus 会写这个日期,create 里直接 setProductStatus 会漏
+        ProductImportDtos.Row row = row("SP101", "甲", null);
+        row.setProductStatus("清仓中");
+
+        ProductImportDtos.CommitResp resp = service.commit(Collections.singletonList(row), "丁超");
+
+        assertEquals(1, resp.getCreated());
+        ArgumentCaptor<Product> created = ArgumentCaptor.forClass(Product.class);
+        verify(productService).create(created.capture(), anyString());
+        assertEquals("在售", created.getValue().getProductStatus(), "建档先落在售");
+        verify(productService).changeStatus(101L, "清仓中", "丁超");
+    }
+
+    @Test
+    void 状态留空时不动已有商品的状态() {
+        // 一张不带状态列的表不该把清仓中/停售的商品整批刷回在售
+        when(productMapper.selectList(any())).thenReturn(
+                new ArrayList<>(Collections.singletonList(product(7L, "SP101"))));
+        ProductImportDtos.Row row = row("SP101", "改个名", null);
+        row.setProductStatus(null);
+
+        ProductImportDtos.CommitResp resp = service.commit(Collections.singletonList(row), "丁超");
+
+        assertEquals(1, resp.getUpdated());
+        verify(productService).update(anyLong(), any(), anyString());
+        verify(productService, never()).changeStatus(anyLong(), anyString(), anyString());
+    }
+
+    @Test
+    void 状态与现状一致时不做多余流转() {
+        // product(...) 造出来就是「停售」,再填一次停售不该产生一条状态变更留痕
+        when(productMapper.selectList(any())).thenReturn(
+                new ArrayList<>(Collections.singletonList(product(7L, "SP101"))));
+        ProductImportDtos.Row row = row("SP101", "甲", null);
+        row.setProductStatus("停售");
+
+        service.commit(Collections.singletonList(row), "丁超");
+
+        verify(productService, never()).changeStatus(anyLong(), anyString(), anyString());
+    }
+
     // ---------- 小工具 ----------
 
     private static Product product(Long id, String code) {
