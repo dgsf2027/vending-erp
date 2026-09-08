@@ -37,6 +37,8 @@ public final class ProductImportDtos {
         private String refCost;
         private String refPrice;
         private String minDisplayQty;
+        /** 在售 / 清仓中 / 停售;留空 = 新建按「在售」建档、更新则保持档案现状不动 */
+        private String productStatus;
         private String remark;
         /** 新建 / 更新 / 错误(服务端提交时会按当时的档案重算,不信前端传来的值) */
         private String action;

@@ -73,8 +73,24 @@ public class ProductImportService {
             {"参考成本", "成本", "成本价", "进价", "采购单价"},
             {"参考售价", "售价", "零售价", "销售价", "单价"},
             {"机内上限", "机内上限建议", "货道容量"},
+            {"状态", "商品状态", "销售状态"},
             {"备注", "说明"},
     };
+
+    /** 状态列的各种写法 → 商品三态;留空不在此列(留空 = 不表态,见 applyStatus) */
+    private static final Map<String, String> STATUS_ALIAS = new HashMap<>();
+
+    static {
+        for (String s : new String[]{"在售", "正常", "上架", "销售中"}) {
+            STATUS_ALIAS.put(s, "在售");
+        }
+        for (String s : new String[]{"清仓中", "清仓"}) {
+            STATUS_ALIAS.put(s, "清仓中");
+        }
+        for (String s : new String[]{"停售", "下架", "停用", "停产"}) {
+            STATUS_ALIAS.put(s, "停售");
+        }
+    }
 
     /** 必填列(缺了整份文件没法用);用 LinkedHashSet 保证报错里的列名顺序稳定 */
     private static final Set<String> REQUIRED =
@@ -110,7 +126,10 @@ public class ProductImportService {
         }
         for (String[] col : COLUMNS) {
             if (!REQUIRED.contains(col[0]) && !colMap.containsKey(col[0])) {
-                resp.getWarnings().add("没找到「" + col[0] + "」列,该字段留空(可在下方列表里手填)");
+                // 状态列缺席不是"留空"那么简单:新建按在售、更新保持原状,说清楚免得以为会被刷掉
+                resp.getWarnings().add("状态".equals(col[0])
+                        ? "没找到「状态」列:新建的按「在售」建档,已有商品保持原状态不变"
+                        : "没找到「" + col[0] + "」列,该字段留空(可在下方列表里手填)");
             }
         }
         if (sheet.getRows().isEmpty()) {
@@ -135,6 +154,7 @@ public class ProductImportService {
             row.setRefCost(cell(raw, colMap, "参考成本"));
             row.setRefPrice(cell(raw, colMap, "参考售价"));
             row.setMinDisplayQty(cell(raw, colMap, "机内上限"));
+            row.setProductStatus(cell(raw, colMap, "状态"));
             row.setRemark(cell(raw, colMap, "备注"));
 
             String dupError = seenCodes.add(StrUtil.nullToEmpty(row.getSkuCode()))
@@ -189,10 +209,13 @@ public class ProductImportService {
                     Product before = existing.get(row.getSkuCode());
                     productId = before.getId();
                     productService.update(productId, patchOf(row), operator);
+                    applyStatus(row, productId, before.getProductStatus(), operator);
                     resp.setUpdated(resp.getUpdated() + 1);
                 } else {
                     Product created = productService.create(newProductOf(row), operator);
                     productId = created.getId();
+                    // create 一律建成「在售」,非在售的目标状态在这里再流转一次(顺带记 clearance_since)
+                    applyStatus(row, productId, created.getProductStatus(), operator);
                     existing.put(created.getSkuCode(), created);
                     resp.setCreated(resp.getCreated() + 1);
                 }
@@ -238,9 +261,10 @@ public class ProductImportService {
                 cell.setCellStyle(head);
                 sheet.setColumnWidth(i, 14 * 256);
             }
+            // 列顺序必须与 COLUMNS 一一对应(倒数第二列 = 状态,留空即按「在售」建档)
             String[][] samples = {
-                    {"SP101", "东方树叶青柑普洱500ml", "6925303730642", "饮料", "瓶", "15", "365", "3.20", "5.00", "8", "示例行,导入前请删掉"},
-                    {"SP102", "康师傅红烧牛肉面", "6920152400111", "泡面", "袋", "24", "180", "2.60", "5.00", "6", ""},
+                    {"SP101", "东方树叶青柑普洱500ml", "6925303730642", "饮料", "瓶", "15", "365", "3.20", "5.00", "8", "在售", "示例行,导入前请删掉"},
+                    {"SP102", "康师傅红烧牛肉面", "6920152400111", "泡面", "袋", "24", "180", "2.60", "5.00", "6", "", ""},
             };
             for (int r = 0; r < samples.length; r++) {
                 org.apache.poi.ss.usermodel.Row row = sheet.createRow(r + 1);
@@ -275,6 +299,9 @@ public class ProductImportService {
             error = dupError;
         } else {
             error = firstNumberError(row);
+            if (error == null) {
+                error = statusError(row);
+            }
         }
         if (error != null) {
             row.setAction(ProductImportDtos.ACTION_ERROR);
@@ -288,6 +315,40 @@ public class ProductImportService {
         } else {
             row.setAction(ProductImportDtos.ACTION_CREATE);
         }
+    }
+
+    /**
+     * 状态列体检:留空放行(不表态),填了但不认识就报错。
+     * 归一后写回 row,后面 applyStatus 直接用,不用再解析一次。
+     */
+    private String statusError(ProductImportDtos.Row row) {
+        String raw = StrUtil.trim(row.getProductStatus());
+        if (StrUtil.isBlank(raw)) {
+            row.setProductStatus(null);
+            return null;
+        }
+        String normalized = STATUS_ALIAS.get(raw);
+        if (normalized == null) {
+            return "「状态」只认 在售/清仓中/停售,填的是:" + raw;
+        }
+        row.setProductStatus(normalized);
+        return null;
+    }
+
+    /**
+     * 落状态。必须走 {@link ProductService#changeStatus}:进「清仓中」要记 clearance_since,
+     * 那是补货引擎「清仓超30天三选一」的计时起点(ReplenishEngine 会跳过 clearanceSince=null 的商品),
+     * 直接 setProductStatus 建档/更新会把这个日期漏掉。
+     *
+     * <p>留空 = 不表态:新建走 create 的默认「在售」,更新则保持档案现状不动
+     * ——否则一张不带状态列的表会把清仓/停售的商品整批刷回在售。
+     */
+    private void applyStatus(ProductImportDtos.Row row, Long productId, String current, String operator) {
+        String target = row.getProductStatus();
+        if (target == null || target.equals(current)) {
+            return;
+        }
+        productService.changeStatus(productId, target, operator);
     }
 
     /** 数字列体检:返回第一个说不通的列,全对返回 null */

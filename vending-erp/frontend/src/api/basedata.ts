@@ -182,6 +182,8 @@ export interface ProductImportRow {
   refCost?: string | null
   refPrice?: string | null
   minDisplayQty?: string | null
+  /** 在售/清仓中/停售;留空 = 新建按「在售」建档、更新保持原状态不动 */
+  productStatus?: string | null
   remark?: string | null
   action?: '新建' | '更新' | '错误'
   errorMsg?: string | null
