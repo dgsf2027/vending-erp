@@ -87,12 +87,12 @@ const openGuide = () => router.push('/guide')
     <!-- 手机顶栏(≤768px 才显示):汉堡 + 标题 -->
     <header class="m-topbar">
       <button class="burger" aria-label="菜单" @click="menuOpen = !menuOpen">☰</button>
-      <span class="m-title">园区小卖 · 账房</span>
+      <span class="m-title">园区小卖部 · 账房</span>
     </header>
     <div v-if="menuOpen" class="side-mask" @click="menuOpen = false"></div>
     <aside class="sidebar" :class="{ open: menuOpen }">
       <div class="logo">
-        <h1>园区小卖 · 账房</h1>
+        <h1>园区小卖部 · 账房</h1>
         <p>VENDING ERP · M1</p>
         <p class="who">{{ sessionName }}（{{ sessionRole }}） · <a href="#" @click.prevent="logout">退出</a></p>
       </div>
