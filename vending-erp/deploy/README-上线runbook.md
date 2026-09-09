@@ -42,6 +42,8 @@ cp .env.prod.example .env && chmod 600 .env
 ### 第 2 步 · 部署 app(🤖 授权后我做 / 或你照做)
 ```bash
 # 在 ECS /data/apps/vend/ 下(代码已 rsync 上来)
+# 页面版本水印:把当前提交写进前端(侧栏底部「版本 xxxxxxx」,点开 GitHub 提交);不 export 则显示 unknown
+export GIT_SHA=$(git rev-parse --short HEAD) GIT_DATE=$(git log -1 --format=%cI) GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 docker compose -f deploy/docker-compose.prod.yml build --no-cache
 docker compose -f deploy/docker-compose.prod.yml up -d
 # 后端首启 Flyway 自动建 40 表(见 flyway-prod-checklist.md 验证)

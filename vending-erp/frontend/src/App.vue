@@ -75,6 +75,15 @@ const isActive = (path?: string) =>
     || (path === '/settings' && route.name === 'machine-detail')
     || (path === '/tasks' && route.name === 'staff-detail'))
 
+/** 页面版本(构建时由 vite.config.ts 注入 git 信息):侧栏底部「版本 xxxxxxx」,点开对应 GitHub 提交 */
+const REPO_URL = 'https://github.com/dgsf2027/vending-erp'
+const gitSha = __GIT_SHA__
+const gitDate = __GIT_DATE__ ? __GIT_DATE__.slice(0, 16).replace('T', ' ') : ''
+const gitBranch = __GIT_BRANCH__
+const buildTime = __BUILD_TIME__.slice(0, 16).replace('T', ' ')
+const commitUrl = gitSha && gitSha !== 'unknown' ? `${REPO_URL}/commit/${gitSha}` : REPO_URL
+const versionTitle = `分支 ${gitBranch || '?'} · 提交时间 ${gitDate || '?'} · 构建时间 ${buildTime}(UTC)· 点击打开 GitHub 提交`
+
 /** 逐页浮层引导:首次进系统自动开一次;右下角「?」随时打开指引 */
 const { autoStartOnce } = useTour()
 onMounted(() => setTimeout(autoStartOnce, 600))
@@ -114,6 +123,9 @@ const openGuide = () => router.push('/guide')
       <div class="side-foot">
         <DataFreshnessBar variant="badge" />
         <span class="foot-line">无登录(SSO 接入前占位)· 嵌入智慧园区</span>
+        <a class="foot-ver" :href="commitUrl" target="_blank" rel="noopener" :title="versionTitle">
+          版本 <code>{{ gitSha }}</code><template v-if="gitDate"> · {{ gitDate }}</template>
+        </a>
       </div>
     </aside>
     <main class="main">
@@ -255,6 +267,19 @@ body {
 }
 .side-foot .foot-line {
   color: #5f7a6b;
+}
+.side-foot .foot-ver {
+  color: #5f7a6b;
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+}
+.side-foot .foot-ver code {
+  font-family: var(--num, ui-monospace, monospace);
+  color: #88a191;
+}
+.side-foot .foot-ver:hover {
+  color: #c3d4c8;
+  text-decoration: underline;
 }
 .main {
   flex: 1;

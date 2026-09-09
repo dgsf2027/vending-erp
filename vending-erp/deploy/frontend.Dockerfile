@@ -10,6 +10,11 @@ RUN npm config set registry https://registry.npmmirror.com && npm i -g pnpm@11
 COPY frontend/package.json frontend/pnpm-lock.yaml* frontend/pnpm-workspace.yaml* ./
 RUN pnpm install --frozen-lockfile || pnpm install
 COPY frontend/ .
+# 版本水印:构建上下文不含 .git,由 compose/CLI 用 build-arg 传入(见 runbook),缺省显示 unknown
+ARG GIT_SHA=unknown
+ARG GIT_DATE=
+ARG GIT_BRANCH=
+ENV VITE_GIT_SHA=$GIT_SHA VITE_GIT_DATE=$GIT_DATE VITE_GIT_BRANCH=$GIT_BRANCH
 RUN pnpm build
 
 FROM nginx:alpine

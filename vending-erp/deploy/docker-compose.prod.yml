@@ -65,6 +65,11 @@ services:
     build:
       context: ..
       dockerfile: deploy/frontend.Dockerfile
+      args:
+        # 页面版本水印(侧栏底部):build 前 export GIT_SHA/GIT_DATE/GIT_BRANCH,见 runbook;不传显示 unknown
+        GIT_SHA: ${GIT_SHA:-unknown}
+        GIT_DATE: ${GIT_DATE:-}
+        GIT_BRANCH: ${GIT_BRANCH:-}
     container_name: vend-web
     restart: unless-stopped
     depends_on: [vend-server]
