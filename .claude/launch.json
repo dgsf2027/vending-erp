@@ -27,6 +27,24 @@
         "cd /Users/yh-1/系统开发/智慧园区/vending-erp/frontend && VITE_PROXY_TARGET=http://127.0.0.1:8102 pnpm dev --port 5193"
       ],
       "port": 5193
+    },
+    {
+      "name": "vend-backend",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        ". \"$HOME/.local/vend-env.sh\" && cd /Users/claude/vending/vending-erp/backend && VEND_PLACEHOLDER_HEADERS=true mvn -s settings.xml -B -q spring-boot:run"
+      ],
+      "port": 8081
+    },
+    {
+      "name": "vend-frontend",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        ". \"$HOME/.local/vend-env.sh\" && cd /Users/claude/vending/vending-erp/frontend && env -u HTTP_PROXY -u HTTPS_PROXY pnpm dev --port 5174 --host ::"
+      ],
+      "port": 5174
     }
   ]
 }
