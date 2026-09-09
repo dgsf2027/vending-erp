@@ -46,11 +46,11 @@ class Scenario17SlowMoverCapacityTest extends RegressionSupport {
         Product slowA = product("慢销卤鸭脖", null, null);
         setBoxSpec(slowA, "12");
         dailySales(m.getId(), slowA.getId(), 7, "1"); // 日均 1 < 1.5
-        // 慢销B:仓库 6 = min 水位 → 不缺,不出建议
+        // 慢销B:采购 13 − 已售 7 = 仓库现存 6 = min 水位 → 不缺,不出建议(一本账:销售直接扣仓库)
         Product slowB = product("慢销豆干", null, null);
         setBoxSpec(slowB, "12");
         dailySales(m.getId(), slowB.getId(), 7, "1");
-        stockWarehouse(slowB.getId(), "6");
+        stockWarehouse(slowB.getId(), "13");
 
         replenishEngine.recalc(OPERATOR);
 

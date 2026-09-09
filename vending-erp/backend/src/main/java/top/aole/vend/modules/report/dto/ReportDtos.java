@@ -25,6 +25,8 @@ public final class ReportDtos {
         private Long id;
         private Long productId;
         private String docType;
+        /** 红冲行:原单据类型(按原单方向反向计入;转移类红冲同样不进成本池) */
+        private String originDocType;
         private BigDecimal changeQty;
         private BigDecimal amount;
         private BigDecimal unitCost;
@@ -127,10 +129,14 @@ public final class ReportDtos {
         private String name;
         private String category;
         private String productStatus;
+        /** 仓库 = 合计 − 已建机器账的机器现存(旧版一本账:没建机器账的销售直接扣这里) */
         private BigDecimal warehouseQty;
-        /** machineId → 推算库存 */
+        /** machineId → 推算库存(仅该机该品有转移单/快照锚点时给出,否则不出现=「—」) */
         private Map<Long, BigDecimal> machineQty = new LinkedHashMap<>();
+        /** 合计 = 期初 + 入库 − 销售 − 盘亏/报损(旧版「期末结存」) */
         private BigDecimal totalQty;
+        /** 库存不足(0 ≤ 合计 ≤ 阈值,旧版看板预警) */
+        private boolean lowStock;
         /** 当前移动加权单位成本(无采购史=null) */
         private BigDecimal unitCost;
         /** 成本金额 = 合计 × 单位成本 */
@@ -147,6 +153,9 @@ public final class ReportDtos {
         private BigDecimal warehouseAmount;
         private BigDecimal machineAmount;
         private int negativeCount;
+        /** 库存预警(旧版看板口径):在售商品 期末结存 ≤ 阈值(且 ≥0)的个数 */
+        private int lowStockCount;
+        private int lowStockThreshold;
         /** 数据截至水印:流水/销售/快照三处最大业务时间 */
         private LocalDateTime dataAsOf;
     }

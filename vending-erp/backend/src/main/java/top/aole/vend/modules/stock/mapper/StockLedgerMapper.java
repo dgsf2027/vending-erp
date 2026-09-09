@@ -58,6 +58,13 @@ public interface StockLedgerMapper extends BaseMapper<StockLedger> {
                                        @Param("productId") Long productId,
                                        @Param("after") LocalDateTime after);
 
+    /** 某机器「建了机器账」的 SKU:有机器账流水(转移单)或快照锚点;只有销售没有转移/锚点的不算 */
+    @Select("SELECT DISTINCT product_id FROM (" +
+            " SELECT product_id FROM yc_vend_stock_ledger WHERE location_type='机器' AND machine_id=#{machineId} AND is_deleted=0" +
+            " UNION SELECT product_id FROM yc_vend_machine_stock_snapshot WHERE machine_id=#{machineId} AND is_deleted=0" +
+            ") t")
+    List<Long> machineProductsWithAccount(@Param("machineId") Long machineId);
+
     /** 某机器在机器账/快照/销售三处出现过的全部 SKU(全机汇总用) */
     @Select("SELECT DISTINCT product_id FROM (" +
             " SELECT product_id FROM yc_vend_stock_ledger WHERE location_type='机器' AND machine_id=#{machineId} AND is_deleted=0" +

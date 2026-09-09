@@ -92,6 +92,19 @@ public class StockService {
         return base.add(transfer).subtract(outbound);
     }
 
+    /**
+     * 全机汇总(仅已建机器账的 SKU):有转移单流水或快照锚点的才推算;
+     * 只有销售、没有任何转移/锚点的 SKU 不给数——旧版一本账口径下这些销售直接扣总库存,
+     * 机器列显「—」而不是把 −销量 当成机器库存(修:没导补货记录时通篇假负库存)。
+     */
+    public Map<Long, BigDecimal> getMachineStockAccounted(Long machineId) {
+        Map<Long, BigDecimal> result = new LinkedHashMap<>();
+        for (Long productId : stockLedgerMapper.machineProductsWithAccount(machineId)) {
+            result.put(productId, getMachineStock(machineId, productId));
+        }
+        return result;
+    }
+
     /** 全机汇总:该机器出现过的全部 SKU 各自推算 */
     public Map<Long, BigDecimal> getMachineStockAll(Long machineId) {
         Map<Long, BigDecimal> result = new LinkedHashMap<>();

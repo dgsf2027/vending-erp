@@ -9,29 +9,37 @@ import top.aole.vend.modules.report.mapper.ReportQueryMapper;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 
 /**
- * 移动加权成本引擎(M1-6,按 DESIGN_DOC 附录C 成本调整过账契约实现)。
+ * 加权成本引擎 —— 旧版单文件进销存台账的口径搬运(2026-09,替换原「移动加权」实现)。
  *
- * 事件流 = 仓库账流水(采购入库/期初/盘盈/盘亏/报损/成本调整…) + 销售记录,按业务时间时序合并遍历:
- * - 入库行(qty>0 带金额):数量、金额同步累加,单位成本随之重算;
- *   负库存时入库 = 从 0 重建金额池(负数量欠账保留,负值挂账丢弃——对齐冲刺0对平算法 s0_3_gross.py);
- * - qty=0 成本调整行:只动金额,单位成本随之变(附录C,M1-7 成本调整单过账产物);
- * - 出库行(盘亏/报损):按当前单位成本结转;
- * - 转移行(出库上架/退库):只是货换了地方,不动全局成本池,仅记单位成本快照;
- * - 销售:按当前单位成本结转(退款=逆向回池);负库存沿用最近均价,兜底=至今累计加权价;
- * - 无采购史 SKU:单位成本=NULL,毛利显「—(成本待补)」,禁 0 参与加权(§13.2-6)。
- *
- * 全程动态重算(数据量小,5k 销售 + 数百流水毫秒级),支撑任意按月切片;
- * persist=true 时把成本快照回写 sale_record.cost_amount 与 ledger 出库/转移行(M3 结算/M4 BI 用)。
+ * 口径(与旧版 template.html 的 recompute()/ledgerRows() 一致):
+ * <ul>
+ * <li><b>一本账</b>:库存 = 期初 + 入库 − 出库。销售/盘亏/报损都是出库;
+ *     出库上架/退库只是货换了地方,不进不出(其红冲同理);</li>
+ * <li><b>按月结转(月末一次加权)</b>:加权单价 = (期初金额 + 本月入库金额) ÷ (期初数量 + 本月入库数量);
+ *     本月全部出库按该单价结转;期末金额 = 期末数量 × 加权单价 = 下月期初金额(连续结转);</li>
+ * <li><b>累计口径</b>(库存页 / 驾驶舱 / 报表「累计」):加权单价 = Σ入库金额 ÷ Σ入库数量,
+ *     出库成本 = 出库数量 × 单价,期末金额 = 期末数量 × 单价 —— 即旧版看板与台账默认视图的算法;</li>
+ * <li><b>没有入库史</b>:沿用最近一次加权单价 → 商品档案「参考成本」兜底(旧版的「成本单价」)→ 仍无则成本为空,
+ *     毛利显「—」,不进合计;</li>
+ * <li>收入口径保留新版三口径:正常全额、退款负、兑换/线下补录收入 0(成本照算)、测试不计;</li>
+ * <li>qty=0 的成本调整行只动本月入库金额(±Δ);红冲行按原单类型反向计入(红冲采购 = 入库 −)。</li>
+ * </ul>
+ * 全程动态重算(数据量小,毫秒级);persist 由 ReportService.recalc 把成本快照回写
+ * sale_record.cost_amount 与 ledger 出库/转移行(M3 结算 / M4 BI 直接读快照)。
  */
 @Service
 @RequiredArgsConstructor
@@ -40,42 +48,48 @@ public class CostEngine {
     private static final DateTimeFormatter PERIOD = DateTimeFormatter.ofPattern("yyyy-MM");
     private static final int SCALE = 6;
 
-    /** 转移类单据:全局成本池无感(货只是换地方) */
+    /** 转移类单据:一本账无感(货只是换地方) */
     private static final String TYPE_TRANSFER_OUT = "出库上架";
     private static final String TYPE_RETURN_BACK = "退库";
+    private static final String TYPE_RED_FLUSH = "红冲";
+    /** 入库类单据(数量、金额进「入库」;其红冲反向) */
+    private static final Set<String> IN_TYPES = new HashSet<>(Arrays.asList("采购入库", "期初", "盘盈入库"));
 
     private final ReportQueryMapper reportQueryMapper;
 
     // ============================== 结果结构 ==============================
 
-    /** 单 SKU 成本池(附录C 状态机) */
+    /** 单 SKU 累计成本池(旧版 AGG 一行:Σ入库 / 期末结存 / 累计加权单价) */
     @Data
     public static class Pool {
+        /** 期末结存(累计) */
         private BigDecimal qty = BigDecimal.ZERO;
+        /** 期末金额 = 期末结存 × 累计加权单价 */
         private BigDecimal val = BigDecimal.ZERO;
-        /** 最近一次结转均价(负库存沿用) */
+        /** 最近一次月度加权单价(入库史为空时沿用) */
         private BigDecimal lastAvg;
-        /** 累计入库(有金额的):兜底加权价 = inbAmt / inbQty */
+        /** 累计入库数量 / 金额(含期初、盘盈、成本调整 Δ;红冲反向) */
         private BigDecimal inbQty = BigDecimal.ZERO;
         private BigDecimal inbAmt = BigDecimal.ZERO;
+        /** 累计出库数量(销售 + 盘亏/报损,退款为负) */
+        private BigDecimal outQty = BigDecimal.ZERO;
+        /** 商品档案参考成本(旧版「成本单价」兜底) */
+        private BigDecimal refCost;
 
-        /** 是否有采购史(无 → 成本 NULL,禁 0 加权) */
+        /** 是否能算成本:有入库史 / 有沿用单价 / 有参考成本 */
         public boolean hasCost() {
-            return inbQty.signum() > 0;
+            return currentAvg() != null;
         }
 
-        /** 当前单位成本(展示口径):池内>0 用池均价,否则最近均价,兜底累计加权;无采购史 null */
+        /** 累计加权单价:Σ入库金额 ÷ Σ入库数量;无入库史 → 最近月度单价 → 参考成本 → null */
         public BigDecimal currentAvg() {
-            if (!hasCost()) {
-                return null;
-            }
-            if (qty.signum() > 0) {
-                return val.divide(qty, SCALE, RoundingMode.HALF_UP);
+            if (inbQty.signum() > 0) {
+                return inbAmt.divide(inbQty, SCALE, RoundingMode.HALF_UP);
             }
             if (lastAvg != null) {
                 return lastAvg;
             }
-            return inbAmt.divide(inbQty, SCALE, RoundingMode.HALF_UP);
+            return refCost == null || refCost.signum() <= 0 ? null : refCost;
         }
     }
 
@@ -91,19 +105,22 @@ public class CostEngine {
         private int noCostSkuCount;
     }
 
-    /** 按 (productId, 月) 的进销存聚合(全局口径:仓库+机器合计) */
+    /** 按 (productId, 月) 的进销存聚合(一本账口径:仓库+机器合计) */
     @Data
     public static class InvAgg {
         private BigDecimal inQty = BigDecimal.ZERO;
         private BigDecimal inAmt = BigDecimal.ZERO;
         private BigDecimal outQty = BigDecimal.ZERO;
+        /** 出库成本 = 出库数量 × 本月加权单价 */
         private BigDecimal outAmt = BigDecimal.ZERO;
         /** 期初(上月期末结转) */
         private BigDecimal openingQty = BigDecimal.ZERO;
         private BigDecimal openingVal = BigDecimal.ZERO;
-        /** 月末池快照 */
+        /** 期末 = 期初 + 入库 − 出库;期末金额 = 期末数量 × 本月加权单价 */
         private BigDecimal closingQty = BigDecimal.ZERO;
         private BigDecimal closingVal = BigDecimal.ZERO;
+        /** 本月加权单价(无成本 = null) */
+        private BigDecimal unitCost;
         private boolean snapshotTaken;
     }
 
@@ -115,7 +132,7 @@ public class CostEngine {
         private Map<String, MonthAgg> machineMonth = new LinkedHashMap<>();
         /** productId+月 → 进销存聚合 */
         private Map<String, InvAgg> invMonth = new LinkedHashMap<>();
-        /** 各 SKU 终态成本池 */
+        /** 各 SKU 累计成本池 */
         private Map<Long, Pool> pools = new HashMap<>();
         /** saleId → 结转成本(退款为负;无成本 SKU 不在内) */
         private Map<Long, BigDecimal> saleCost = new HashMap<>();
@@ -125,12 +142,39 @@ public class CostEngine {
         private Map<Long, BigDecimal> ledgerUnitCost = new HashMap<>();
         /** 事件流出现过的全部月份(升序,无空洞——中间月补齐) */
         private List<String> months = new ArrayList<>();
+        /** machineId → productId → 累计销量(带符号);报表「累计」机器维用 */
+        private Map<Long, Map<Long, BigDecimal>> machineSkuQty = new LinkedHashMap<>();
+        /** machineId → 累计无成本销售行数 */
+        private Map<Long, Integer> machineNoCostRows = new HashMap<>();
 
         public static final long UNBOUND_KEY = -1L;
+        /** 聚合键分隔符(id + SEP + 月份) */
+        public static final String KEY_SEP = "\u0001";
 
         public static String key(long id, String period) {
-            return id + "" + period;
+            return id + KEY_SEP + period;
         }
+
+        /** 从聚合键取回 id */
+        public static long keyId(String key) {
+            return Long.parseLong(key.substring(0, key.indexOf(KEY_SEP)));
+        }
+    }
+
+    // ============================== 事件分桶 ==============================
+
+    /** 单 SKU 单月的原始事件桶 */
+    private static class Bucket {
+        BigDecimal inQty = BigDecimal.ZERO;
+        BigDecimal inAmt = BigDecimal.ZERO;
+        /** 无金额入库(如无价盘盈):按期初单价估值,不改变单价 */
+        BigDecimal inNoAmtQty = BigDecimal.ZERO;
+        /** 成本调整 Δ(qty=0 行) */
+        BigDecimal adjAmt = BigDecimal.ZERO;
+        /** 单据出库数量(盘亏/报损为正,其红冲为负) */
+        BigDecimal outQtyLedger = BigDecimal.ZERO;
+        final List<LedgerEvent> costRows = new ArrayList<>();
+        final List<SaleEvent> sales = new ArrayList<>();
     }
 
     // ============================== 重放 ==============================
@@ -138,221 +182,204 @@ public class CostEngine {
     public Replay replay() {
         List<LedgerEvent> ledgers = reportQueryMapper.ledgerEvents();
         List<SaleEvent> sales = reportQueryMapper.saleEvents();
+        Map<Long, BigDecimal> refCosts = loadRefCosts();
         Replay r = new Replay();
         TreeSet<String> monthSet = new TreeSet<>();
-        // 每 SKU 月度池快照(月内最后一次事件后的状态)
-        Map<Long, TreeMap<String, BigDecimal[]>> poolSnaps = new HashMap<>();
+        Map<Long, TreeMap<String, Bucket>> byProduct = new LinkedHashMap<>();
 
-        int li = 0;
-        int si = 0;
-        while (li < ledgers.size() || si < sales.size()) {
-            boolean takeLedger;
-            if (li >= ledgers.size()) {
-                takeLedger = false;
-            } else if (si >= sales.size()) {
-                takeLedger = true;
-            } else {
-                // 同一时刻:先入库后销售(对齐冲刺0事件排序 (t, kind))
-                takeLedger = !ledgers.get(li).getBizTime().isAfter(sales.get(si).getBizTime());
+        for (LedgerEvent e : ledgers) {
+            String period = e.getBizTime().format(PERIOD);
+            monthSet.add(period);
+            String effective = e.getOriginDocType() != null ? e.getOriginDocType() : e.getDocType();
+            Bucket b = bucket(byProduct, e.getProductId(), period);
+            if (TYPE_TRANSFER_OUT.equals(effective) || TYPE_RETURN_BACK.equals(effective)) {
+                b.costRows.add(e); // 转移:一本账无感,只记单位成本快照
+                continue;
             }
-            if (takeLedger) {
-                LedgerEvent e = ledgers.get(li++);
-                String period = e.getBizTime().format(PERIOD);
-                monthSet.add(period);
-                applyLedger(r, e, period, poolSnaps);
-            } else {
-                SaleEvent e = sales.get(si++);
-                String period = e.getBizPeriod() != null ? e.getBizPeriod() : e.getBizTime().format(PERIOD);
-                monthSet.add(period);
-                applySale(r, e, period, poolSnaps);
+            int sign = e.getChangeQty().signum();
+            if (sign == 0) {
+                b.adjAmt = b.adjAmt.add(nvl(e.getAmount())); // 成本调整:只动金额(附录C)
+                continue;
             }
+            boolean inbound = IN_TYPES.contains(effective)
+                    || (sign > 0 && !TYPE_RED_FLUSH.equals(e.getDocType()));
+            if (inbound) {
+                // 入库(采购/期初/盘盈);红冲采购 = 负数量负金额,自然反向
+                if (e.getAmount() != null) {
+                    b.inQty = b.inQty.add(e.getChangeQty());
+                    b.inAmt = b.inAmt.add(e.getAmount());
+                } else {
+                    b.inQty = b.inQty.add(e.getChangeQty());
+                    b.inNoAmtQty = b.inNoAmtQty.add(e.getChangeQty());
+                }
+            } else {
+                // 出库(盘亏/报损/其它负行):按本月加权单价结转;盘亏红冲(+)= 出库负
+                b.outQtyLedger = b.outQtyLedger.add(e.getChangeQty().negate());
+                b.costRows.add(e);
+            }
+        }
+
+        for (SaleEvent s : sales) {
+            String type = s.getOrderType() == null ? "正常" : s.getOrderType();
+            if ("测试".equals(type)) {
+                continue; // 三口径:测试不计(§13.2-3)
+            }
+            String period = s.getBizPeriod() != null ? s.getBizPeriod() : s.getBizTime().format(PERIOD);
+            monthSet.add(period);
+            if (s.getProductId() == null) {
+                // 未绑定行:只进销售额聚合,无成本
+                MonthAgg sku = r.getSkuMonth().computeIfAbsent(Replay.key(Replay.UNBOUND_KEY, period), k -> new MonthAgg());
+                addSale(sku, s, null);
+                if (s.getMachineId() != null) {
+                    MonthAgg mac = r.getMachineMonth().computeIfAbsent(Replay.key(s.getMachineId(), period), k -> new MonthAgg());
+                    addSale(mac, s, null);
+                    mac.setNoCostSkuCount(mac.getNoCostSkuCount() + 1);
+                    r.getMachineNoCostRows().merge(s.getMachineId(), 1, Integer::sum);
+                }
+                continue;
+            }
+            bucket(byProduct, s.getProductId(), period).sales.add(s);
         }
 
         // 月份序列补齐空洞(进销存期初期末要连续结转)
         if (!monthSet.isEmpty()) {
-            java.time.YearMonth m = java.time.YearMonth.parse(monthSet.first());
-            java.time.YearMonth last = java.time.YearMonth.parse(monthSet.last());
+            YearMonth m = YearMonth.parse(monthSet.first());
+            YearMonth last = YearMonth.parse(monthSet.last());
             while (!m.isAfter(last)) {
                 r.getMonths().add(m.toString());
                 m = m.plusMonths(1);
             }
         }
 
-        // 进销存:按月份序列为每个 SKU 结转 期初/期末
-        fillInventoryCarry(r, poolSnaps);
+        for (Map.Entry<Long, TreeMap<String, Bucket>> e : byProduct.entrySet()) {
+            replayProduct(r, e.getKey(), e.getValue(), refCosts.get(e.getKey()));
+        }
         return r;
     }
 
-    private void applyLedger(Replay r, LedgerEvent e, String period,
-                             Map<Long, TreeMap<String, BigDecimal[]>> poolSnaps) {
-        Pool pool = r.getPools().computeIfAbsent(e.getProductId(), k -> new Pool());
-        String type = e.getDocType();
-        boolean transfer = TYPE_TRANSFER_OUT.equals(type) || TYPE_RETURN_BACK.equals(type);
-        if (transfer) {
-            // 转移:全局池无感,只记单位成本快照(附录C:出库行按当前单位成本结转)
-            BigDecimal avg = pool.currentAvg();
-            if (avg != null) {
-                r.getLedgerUnitCost().put(e.getId(), avg);
+    /** 单 SKU 按月结转:期初 → 加权单价 → 出库结转 → 期末 = 下月期初 */
+    private void replayProduct(Replay r, Long productId, TreeMap<String, Bucket> buckets, BigDecimal refCost) {
+        Pool pool = new Pool();
+        pool.setRefCost(refCost);
+        BigDecimal carryQty = BigDecimal.ZERO;
+        BigDecimal carryAmt = BigDecimal.ZERO;
+        BigDecimal lastAvg = null;
+        for (String month : r.getMonths()) {
+            Bucket b = buckets.get(month);
+            InvAgg inv = r.getInvMonth().computeIfAbsent(Replay.key(productId, month), k -> new InvAgg());
+            inv.setOpeningQty(carryQty);
+            inv.setOpeningVal(carryAmt);
+            inv.setSnapshotTaken(true);
+            if (b == null) {
+                // 无事件月:照抄期初
+                inv.setClosingQty(carryQty);
+                inv.setClosingVal(carryAmt);
+                inv.setUnitCost(lastAvg != null ? lastAvg : (refCost != null && refCost.signum() > 0 ? refCost : null));
+                continue;
             }
-            return;
-        }
+            // 无价入库按期初单价估值(不改变单价);没有任何单价依据时按 0 计
+            BigDecimal avgBefore = carryQty.signum() > 0
+                    ? carryAmt.divide(carryQty, SCALE, RoundingMode.HALF_UP)
+                    : (lastAvg != null ? lastAvg : (refCost != null && refCost.signum() > 0 ? refCost : null));
+            BigDecimal inAmt = b.inAmt.add(b.adjAmt);
+            if (b.inNoAmtQty.signum() != 0 && avgBefore != null) {
+                inAmt = inAmt.add(b.inNoAmtQty.multiply(avgBefore));
+            }
+            BigDecimal baseQty = carryQty.add(b.inQty);
+            BigDecimal baseAmt = carryAmt.add(inAmt);
+            // 旧版公式:加权单价 = (期初金额 + 入库金额) ÷ (期初数量 + 入库数量);分母 ≤0 → 沿用/参考成本
+            BigDecimal wAvg = baseQty.signum() > 0
+                    ? baseAmt.divide(baseQty, SCALE, RoundingMode.HALF_UP)
+                    : (lastAvg != null ? lastAvg : (refCost != null && refCost.signum() > 0 ? refCost : null));
 
-        InvAgg inv = r.getInvMonth().computeIfAbsent(
-                Replay.key(e.getProductId(), period), k -> new InvAgg());
-        int sign = e.getChangeQty().signum();
-        if (sign > 0) {
-            // 入库:数量、金额同步累加;负库存时金额池从 0 重建(负值挂账丢弃,对齐冲刺0)
-            BigDecimal amt = e.getAmount();
-            if (amt == null) {
-                // 无金额入库(如盘盈无价):按当前均价折算,不改变单位成本
-                BigDecimal avg = pool.currentAvg();
-                amt = avg == null ? null : e.getChangeQty().multiply(avg);
-            }
-            BigDecimal baseVal = pool.getQty().signum() > 0 ? pool.getVal() : BigDecimal.ZERO;
-            pool.setQty(pool.getQty().add(e.getChangeQty()));
-            if (amt != null) {
-                pool.setVal(baseVal.add(amt));
-                pool.setInbQty(pool.getInbQty().add(e.getChangeQty()));
-                pool.setInbAmt(pool.getInbAmt().add(amt));
-                if (pool.getQty().signum() > 0) {
-                    pool.setLastAvg(pool.getVal().divide(pool.getQty(), SCALE, RoundingMode.HALF_UP));
+            // 销售:按本月加权单价结转
+            BigDecimal outQty = b.outQtyLedger;
+            for (SaleEvent s : b.sales) {
+                String type = s.getOrderType() == null ? "正常" : s.getOrderType();
+                boolean refund = "退款".equals(type);
+                BigDecimal signedQty = refund ? nvl(s.getQty()).negate() : nvl(s.getQty());
+                outQty = outQty.add(signedQty);
+                BigDecimal cost = wAvg == null ? null : signedQty.multiply(wAvg);
+                MonthAgg sku = r.getSkuMonth().computeIfAbsent(Replay.key(productId, month), k -> new MonthAgg());
+                addSale(sku, s, cost);
+                if (s.getMachineId() != null) {
+                    MonthAgg mac = r.getMachineMonth().computeIfAbsent(Replay.key(s.getMachineId(), month), k -> new MonthAgg());
+                    addSale(mac, s, cost);
+                    if (cost == null) {
+                        mac.setNoCostSkuCount(mac.getNoCostSkuCount() + 1);
+                        r.getMachineNoCostRows().merge(s.getMachineId(), 1, Integer::sum);
+                    }
+                    r.getMachineSkuQty().computeIfAbsent(s.getMachineId(), k -> new LinkedHashMap<>())
+                            .merge(productId, signedQty, BigDecimal::add);
                 }
-                inv.setInAmt(inv.getInAmt().add(amt));
+                if (cost == null) {
+                    r.getNoCostSaleIds().add(s.getId());
+                } else {
+                    r.getSaleCost().put(s.getId(), cost.setScale(4, RoundingMode.HALF_UP));
+                }
             }
-            inv.setInQty(inv.getInQty().add(e.getChangeQty()));
-        } else if (sign == 0) {
-            // qty=0 成本调整行:只动金额,单位成本随之变(附录C)
-            BigDecimal delta = e.getAmount() == null ? BigDecimal.ZERO : e.getAmount();
-            pool.setVal(pool.getVal().add(delta));
-            pool.setInbAmt(pool.getInbAmt().add(delta));
-            if (pool.getQty().signum() > 0) {
-                pool.setLastAvg(pool.getVal().divide(pool.getQty(), SCALE, RoundingMode.HALF_UP));
+            for (LedgerEvent row : b.costRows) {
+                if (wAvg != null) {
+                    r.getLedgerUnitCost().put(row.getId(), wAvg);
+                }
             }
-            inv.setInAmt(inv.getInAmt().add(delta));
-        } else {
-            // 出库(盘亏/报损/红冲负行):按当前单位成本结转
-            BigDecimal q = e.getChangeQty().abs();
-            BigDecimal avg = pool.currentAvg();
-            pool.setQty(pool.getQty().add(e.getChangeQty()));
-            inv.setOutQty(inv.getOutQty().add(q));
-            if (avg != null) {
-                BigDecimal cost = q.multiply(avg);
-                pool.setVal(pool.getVal().subtract(cost));
-                pool.setLastAvg(avg);
-                r.getLedgerUnitCost().put(e.getId(), avg);
-                inv.setOutAmt(inv.getOutAmt().add(cost));
-            }
-        }
-        snapPool(poolSnaps, e.getProductId(), period, pool);
-    }
+            BigDecimal outAmt = wAvg == null ? BigDecimal.ZERO : outQty.multiply(wAvg);
+            BigDecimal closingQty = baseQty.subtract(outQty);
+            BigDecimal closingAmt = wAvg == null ? BigDecimal.ZERO : closingQty.multiply(wAvg);
+            inv.setInQty(b.inQty);
+            inv.setInAmt(inAmt);
+            inv.setOutQty(outQty);
+            inv.setOutAmt(outAmt);
+            inv.setClosingQty(closingQty);
+            inv.setClosingVal(closingAmt);
+            inv.setUnitCost(wAvg);
 
-    private void applySale(Replay r, SaleEvent e, String period,
-                           Map<Long, TreeMap<String, BigDecimal[]>> poolSnaps) {
-        String type = e.getOrderType() == null ? "正常" : e.getOrderType();
-        if ("测试".equals(type)) {
-            return; // 三口径:测试不计(§13.2-3)
-        }
-        Long productKey = e.getProductId() == null ? Replay.UNBOUND_KEY : e.getProductId();
-        MonthAgg sku = r.getSkuMonth().computeIfAbsent(Replay.key(productKey, period), k -> new MonthAgg());
-        MonthAgg mac = e.getMachineId() == null ? null
-                : r.getMachineMonth().computeIfAbsent(Replay.key(e.getMachineId(), period), k -> new MonthAgg());
-
-        boolean refund = "退款".equals(type);
-        boolean exchange = "兑换".equals(type);
-        boolean offline = "线下补录".equals(type);
-        // 销售额口径:正常全额、退款负(导出即负数,原样入);兑换/线下补录收入 0(§13.1 毛利口径 + 穿行场景4/5)
-        BigDecimal amt = (exchange || offline) ? BigDecimal.ZERO : nvl(e.getAmountReceived());
-        BigDecimal qty = nvl(e.getQty());
-        sku.setSalesAmt(sku.getSalesAmt().add(amt));
-        sku.setSalesQty(sku.getSalesQty().add(refund ? qty.negate() : qty));
-        if (mac != null) {
-            mac.setSalesAmt(mac.getSalesAmt().add(amt));
-            mac.setSalesQty(mac.getSalesQty().add(refund ? qty.negate() : qty));
-        }
-
-        if (e.getProductId() == null) {
-            sku.setNoCost(true);
-            if (mac != null) {
-                mac.setNoCost(true);
-                mac.setNoCostSkuCount(mac.getNoCostSkuCount() + 1);
+            pool.setInbQty(pool.getInbQty().add(b.inQty));
+            pool.setInbAmt(pool.getInbAmt().add(inAmt));
+            pool.setOutQty(pool.getOutQty().add(outQty));
+            carryQty = closingQty;
+            carryAmt = closingAmt;
+            if (wAvg != null) {
+                lastAvg = wAvg;
             }
-            return;
         }
-        Pool pool = r.getPools().computeIfAbsent(e.getProductId(), k -> new Pool());
-        if (!pool.hasCost()) {
-            // 无采购史:成本 NULL,毛利显「—」,禁 0 加权(§13.2-6);数量照常流转(进销存/负库存要看得见)
-            sku.setNoCost(true);
-            r.getNoCostSaleIds().add(e.getId());
-            if (mac != null) {
-                mac.setNoCost(true);
-                mac.setNoCostSkuCount(mac.getNoCostSkuCount() + 1);
-            }
-            InvAgg invNc = r.getInvMonth().computeIfAbsent(
-                    Replay.key(e.getProductId(), period), k -> new InvAgg());
-            if (refund) {
-                pool.setQty(pool.getQty().add(qty));
-                invNc.setOutQty(invNc.getOutQty().subtract(qty));
-            } else {
-                pool.setQty(pool.getQty().subtract(qty));
-                invNc.setOutQty(invNc.getOutQty().add(qty));
-            }
-            snapPool(poolSnaps, e.getProductId(), period, pool);
-            return;
-        }
+        pool.setQty(carryQty);
+        pool.setLastAvg(lastAvg);
         BigDecimal avg = pool.currentAvg();
-        BigDecimal cost = qty.multiply(avg);
-        InvAgg inv = r.getInvMonth().computeIfAbsent(
-                Replay.key(e.getProductId(), period), k -> new InvAgg());
-        if (refund) {
-            // 退款逆向回池:收入负(原样)、成本负
-            pool.setQty(pool.getQty().add(qty));
-            pool.setVal(pool.getVal().add(cost));
-            sku.setCostAmt(sku.getCostAmt().subtract(cost));
-            if (mac != null) {
-                mac.setCostAmt(mac.getCostAmt().subtract(cost));
-            }
-            r.getSaleCost().put(e.getId(), cost.negate().setScale(4, RoundingMode.HALF_UP));
-            inv.setOutQty(inv.getOutQty().subtract(qty));
-            inv.setOutAmt(inv.getOutAmt().subtract(cost));
+        pool.setVal(avg == null ? BigDecimal.ZERO : carryQty.multiply(avg));
+        r.getPools().put(productId, pool);
+    }
+
+    /** 销售行进聚合:销售额口径 正常全额 / 退款负 / 兑换、线下补录 0;销量带符号 */
+    private static void addSale(MonthAgg agg, SaleEvent s, BigDecimal cost) {
+        String type = s.getOrderType() == null ? "正常" : s.getOrderType();
+        boolean refund = "退款".equals(type);
+        boolean zeroRevenue = "兑换".equals(type) || "线下补录".equals(type);
+        BigDecimal amt = zeroRevenue ? BigDecimal.ZERO : nvl(s.getAmountReceived());
+        BigDecimal qty = nvl(s.getQty());
+        agg.setSalesAmt(agg.getSalesAmt().add(amt));
+        agg.setSalesQty(agg.getSalesQty().add(refund ? qty.negate() : qty));
+        if (cost == null) {
+            agg.setNoCost(true);
         } else {
-            pool.setQty(pool.getQty().subtract(qty));
-            pool.setVal(pool.getVal().subtract(cost));
-            pool.setLastAvg(avg);
-            sku.setCostAmt(sku.getCostAmt().add(cost));
-            if (mac != null) {
-                mac.setCostAmt(mac.getCostAmt().add(cost));
-            }
-            r.getSaleCost().put(e.getId(), cost.setScale(4, RoundingMode.HALF_UP));
-            inv.setOutQty(inv.getOutQty().add(qty));
-            inv.setOutAmt(inv.getOutAmt().add(cost));
+            agg.setCostAmt(agg.getCostAmt().add(cost));
         }
-        snapPool(poolSnaps, e.getProductId(), period, pool);
     }
 
-    private static void snapPool(Map<Long, TreeMap<String, BigDecimal[]>> snaps,
-                                 Long productId, String period, Pool pool) {
-        snaps.computeIfAbsent(productId, k -> new TreeMap<>())
-                .put(period, new BigDecimal[]{pool.getQty(), pool.getVal(), pool.hasCost() ? BigDecimal.ONE : BigDecimal.ZERO});
+    private static Bucket bucket(Map<Long, TreeMap<String, Bucket>> byProduct, Long productId, String period) {
+        return byProduct.computeIfAbsent(productId, k -> new TreeMap<>())
+                .computeIfAbsent(period, k -> new Bucket());
     }
 
-    /** 按月份序列为每个 SKU 结转 期初/期末(无事件月照抄上月期末) */
-    private void fillInventoryCarry(Replay r, Map<Long, TreeMap<String, BigDecimal[]>> poolSnaps) {
-        for (Map.Entry<Long, TreeMap<String, BigDecimal[]>> e : poolSnaps.entrySet()) {
-            Long productId = e.getKey();
-            BigDecimal[] carry = {BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO};
-            for (String month : r.getMonths()) {
-                BigDecimal[] snap = e.getValue().get(month);
-                InvAgg inv = r.getInvMonth().computeIfAbsent(Replay.key(productId, month), k -> new InvAgg());
-                // 期初 = 上月期末(carry);期末 = 本月快照(无事件 = 照抄期初)
-                BigDecimal[] closing = snap != null ? snap : carry;
-                inv.setOpeningQty(carry[0]);
-                inv.setOpeningVal(carry[1]);
-                inv.setClosingQty(closing[0]);
-                inv.setClosingVal(closing[1]);
-                inv.setSnapshotTaken(true);
-                carry = closing;
+    private Map<Long, BigDecimal> loadRefCosts() {
+        Map<Long, BigDecimal> map = new HashMap<>();
+        for (Map<String, Object> row : reportQueryMapper.productRefCosts()) {
+            Object cost = row.get("refCost");
+            if (cost != null) {
+                map.put(((Number) row.get("id")).longValue(), new BigDecimal(cost.toString()));
             }
         }
+        return map;
     }
 
     private static BigDecimal nvl(BigDecimal v) {

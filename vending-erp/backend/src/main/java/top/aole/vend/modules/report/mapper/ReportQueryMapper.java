@@ -24,11 +24,17 @@ public interface ReportQueryMapper {
      * 成本引擎输入①:全部仓库账流水(带单据类型),按业务时间时序。
      * 同一时刻先入库后出库(id 升序兜底);qty=0 成本调整行也在其中(附录C)。
      */
-    @Select("SELECT l.id, l.product_id, d.doc_type, l.change_qty, l.amount, l.unit_cost, l.biz_time " +
+    @Select("SELECT l.id, l.product_id, d.doc_type, o.doc_type AS origin_doc_type, " +
+            "       l.change_qty, l.amount, l.unit_cost, l.biz_time " +
             "FROM yc_vend_stock_ledger l JOIN yc_vend_doc_head d ON d.id = l.doc_id " +
+            "LEFT JOIN yc_vend_doc_head o ON o.id = d.red_flush_of " +
             "WHERE l.location_type='仓库' AND l.is_deleted=0 " +
             "ORDER BY l.biz_time, l.id")
     List<LedgerEvent> ledgerEvents();
+
+    /** 成本引擎输入③:商品参考成本(旧版「成本单价」兜底:没有入库史时按它计成本) */
+    @Select("SELECT id, ref_cost AS refCost FROM yc_vend_product WHERE is_deleted=0")
+    List<Map<String, Object>> productRefCosts();
 
     /** 成本引擎输入②:全部销售事件(含未绑定行 product_id NULL,单独出「未绑定」聚合行) */
     @Select("SELECT id, product_id, machine_id, qty, amount_received, order_type, biz_time, biz_period " +

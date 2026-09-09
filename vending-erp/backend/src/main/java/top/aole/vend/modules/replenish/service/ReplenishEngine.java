@@ -26,6 +26,7 @@ import top.aole.vend.modules.replenish.domain.DemandStats;
 import top.aole.vend.modules.replenish.domain.ReplenishCalc;
 import top.aole.vend.modules.replenish.domain.entity.ReplenishPlan;
 import top.aole.vend.modules.replenish.mapper.ReplenishPlanMapper;
+import top.aole.vend.modules.report.service.ReportService;
 import top.aole.vend.modules.stock.service.StockService;
 
 import java.math.BigDecimal;
@@ -80,6 +81,7 @@ public class ReplenishEngine {
     private final MachineMapper machineMapper;
     private final SlotMapper slotMapper;
     private final StockService stockService;
+    private final ReportService reportService;
     private final PurchaseOrderService purchaseOrderService;
     private final ILlmService llmService;
     private final LlmCallLogMapper llmCallLogMapper;
@@ -159,6 +161,8 @@ public class ReplenishEngine {
             if (machine == null) {
                 continue;
             }
+            // 机内现有只对已建机器账(有转移单/快照锚点)的 SKU 推算;没建账的视为未知(null → 按 0 补满)
+            Map<Long, BigDecimal> accounted = stockService.getMachineStockAccounted(machineId);
             for (Map.Entry<Long, BigDecimal> pe : me.getValue().entrySet()) {
                 Long productId = pe.getKey();
                 Product product = products.get(productId);
@@ -168,7 +172,7 @@ public class ReplenishEngine {
                 if (handledKeys.contains(key(TYPE_MACHINE, machineId, productId))) {
                     continue;
                 }
-                BigDecimal machineQty = stockService.getMachineStock(machineId, productId);
+                BigDecimal machineQty = accounted.get(productId);
                 DemandStats stats = snap.byMachine
                         .getOrDefault(machineId, new HashMap<>()).get(productId);
                 BigDecimal avg = stats == null ? null : stats.getAvgDaily();
@@ -235,10 +239,10 @@ public class ReplenishEngine {
     private int insertPurchaseSide(LocalDate planDate, DemandStatsService.Snapshot snap,
                                    Map<Long, Product> products, Map<Long, Machine> machines,
                                    ConfigResolver cfg, Set<String> handledKeys) {
-        // 机内合计:productId → Σ max(该机推算库存, 0)
+        // 机内合计:productId → Σ max(该机推算库存, 0)(仅已建机器账的机器;没建账的销售已直接扣在仓库数里)
         Map<Long, BigDecimal> machineTotal = new HashMap<>();
         for (Long machineId : machines.keySet()) {
-            for (Map.Entry<Long, BigDecimal> e : stockService.getMachineStockAll(machineId).entrySet()) {
+            for (Map.Entry<Long, BigDecimal> e : stockService.getMachineStockAccounted(machineId).entrySet()) {
                 machineTotal.merge(e.getKey(), e.getValue().max(BigDecimal.ZERO), BigDecimal::add);
             }
         }
@@ -251,8 +255,8 @@ public class ReplenishEngine {
                 onSaleIds.add(p.getId());
             }
         }
-        // 仓库现存(批量) + 在途
-        Map<Long, BigDecimal> warehouse = stockService.getWarehouseStockBatch(onSaleIds);
+        // 仓库现存(旧版一本账口径,与库存页「仓库」列同数:期初+入库−销售−损耗−已建账机器现存)+ 在途
+        Map<Long, BigDecimal> warehouse = reportService.warehouseBookQty();
         Map<Long, BigDecimal> inTransit = new HashMap<>();
         for (Map<String, Object> row : purchaseOrderService.inTransitAll()) {
             inTransit.put(((Number) row.get("productId")).longValue(),
@@ -272,7 +276,8 @@ public class ReplenishEngine {
                 continue;
             }
             ReplenishConfig conf = cfg.forSku(productId);
-            BigDecimal wh = nz(warehouse.get(productId));
+            // 一本账仓库现存可能为负(漏录采购/超卖)——负数是数据问题不是需求,按 0 参与(同机器侧口径)
+            BigDecimal wh = nz(warehouse.get(productId)).max(BigDecimal.ZERO);
             BigDecimal mc = nz(machineTotal.get(productId));
             BigDecimal transit = nz(inTransit.get(productId));
 
@@ -464,7 +469,7 @@ public class ReplenishEngine {
         for (Product p : clearing) {
             ids.add(p.getId());
         }
-        Map<Long, BigDecimal> warehouse = stockService.getWarehouseStockBatch(ids);
+        Map<Long, BigDecimal> warehouse = reportService.warehouseBookQty();
         LocalDate today = LocalDate.now();
         List<Map<String, Object>> alerts = new ArrayList<>();
         for (Product p : clearing) {

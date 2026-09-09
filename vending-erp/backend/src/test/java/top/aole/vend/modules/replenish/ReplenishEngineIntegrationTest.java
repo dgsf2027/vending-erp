@@ -131,8 +131,8 @@ class ReplenishEngineIntegrationTest extends BaseIntegrationTest {
         Product p = product("矿泉水测试", "24", null, "在售");
         Machine m = machine("2楼测试机");
         dailySales(m.getId(), p.getId(), 28, "20");
-        stockWarehouse(p.getId(), "80"); // 仓库垫底 80
-        // 机内推算会是负数(有销售无补货)→ 引擎按 0 参与
+        // 一本账:采购 640 − 已售 560 = 仓库现存 80(没建机器账的销售直接扣仓库,机器列不出数)
+        stockWarehouse(p.getId(), "640");
         inTransit(p.getId(), "48");
 
         engine.recalc("测试员");
@@ -153,7 +153,7 @@ class ReplenishEngineIntegrationTest extends BaseIntegrationTest {
         Product p = product("慢销卤味测试", "12", null, "在售");
         Machine m = machine("3楼测试机");
         dailySales(m.getId(), p.getId(), 28, "1"); // 日均 1
-        // 仓库 0、机内负(按0)、在途 0 → 低于 min 0.5 箱 → 补到 max 1 箱 = 12
+        // 一本账仓库现存 = 0 − 28 = −28 → 负数按 0 参与、在途 0 → 低于 min 0.5 箱 → 补到 max 1 箱 = 12
 
         engine.recalc("测试员");
 

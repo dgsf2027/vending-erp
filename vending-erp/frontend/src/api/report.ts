@@ -71,6 +71,8 @@ export interface StockRow {
   unitCost: number | null
   amount: number | null
   negative: boolean
+  /** 库存不足(在售且 0 ≤ 合计 ≤ 阈值,旧版看板预警) */
+  lowStock: boolean
 }
 
 export interface StockResp {
@@ -80,6 +82,8 @@ export interface StockResp {
   warehouseAmount: number
   machineAmount: number
   negativeCount: number
+  lowStockCount: number
+  lowStockThreshold: number
   dataAsOf: string | null
 }
 

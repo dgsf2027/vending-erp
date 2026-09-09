@@ -159,10 +159,10 @@ const events = computed(() => {
         <div class="lb">毛利率(30天)</div>
         <div class="vv num">{{ data.marginPct30 != null ? data.marginPct30 + '%' : '—' }}</div>
         <span class="mini" v-if="!data.hasCost" style="color: var(--amber)">无采购史,成本待补</span>
-        <span class="mini" v-else>毛利 = 实收 − 移动加权成本</span>
+        <span class="mini" v-else>毛利 = 实收 − 加权成本</span>
       </div>
       <div class="ledger-card stat">
-        <div class="lb">移动加权成本</div>
+        <div class="lb">加权成本</div>
         <div class="vv num">{{ data.unitCost != null ? '¥' + data.unitCost : '—' }}</div>
         <span class="mini">存货价值 {{ money(data.stockAmount) }}</span>
       </div>

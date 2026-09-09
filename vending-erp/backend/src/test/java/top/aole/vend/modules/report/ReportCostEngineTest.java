@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * M1-6 集成测试(vend_test_report 库):移动加权成本引擎(附录C)+ 毛利三口径 + 进销存 + 库存查询 + 期初向导。
+ * M1-6 集成测试(vend_test_report 库):加权成本引擎(旧版台账口径:月末一次加权 + 累计)+ 毛利三口径 + 进销存 + 库存查询 + 期初向导。
  */
 @ActiveProfiles("test-report")
 class ReportCostEngineTest extends BaseIntegrationTest {
@@ -116,30 +116,38 @@ class ReportCostEngineTest extends BaseIntegrationTest {
         return LocalDateTime.parse(text);
     }
 
-    // ============================== 1. 加权成本时序:多批不同价 → 出库结转 ==============================
+    // ============================== 1. 加权成本时序:多批不同价 → 月末一次加权结转(旧版台账口径) ==============================
 
     @Test
-    void movingWeighted_multiBatchPrices_thenMonthlySlices() {
+    void periodWeighted_multiBatchPrices_thenMonthlySlices() {
         Product p = product("MW");
         Machine m = machine();
         purchase(p.getId(), "10", "3.0", t("2026-06-01T08:00:00"));
-        sale(m.getId(), p.getId(), "5", "25", "正常", t("2026-06-10T12:00:00")); // 成本 5×3=15
-        purchase(p.getId(), "10", "4.0", t("2026-06-20T08:00:00"));            // 池 (5×3+10×4)/15=3.6667
-        sale(m.getId(), p.getId(), "6", "30", "正常", t("2026-07-05T12:00:00")); // 成本 6×3.6667=22
+        sale(m.getId(), p.getId(), "5", "25", "正常", t("2026-06-10T12:00:00"));
+        purchase(p.getId(), "10", "4.0", t("2026-06-20T08:00:00"));
+        // 6 月加权单价 = (0 + 30 + 40) / (0 + 20) = 3.5 → 成本 5×3.5=17.5;期末 15 件 × 3.5 = 52.5
+        sale(m.getId(), p.getId(), "6", "30", "正常", t("2026-07-05T12:00:00"));
+        // 7 月加权单价 = (52.5 + 0) / (15 + 0) = 3.5 → 成本 6×3.5=21
 
         ReportDtos.GrossMarginResp june = reportService.grossMargin("2026-06", "sku");
         ReportDtos.GrossMarginRow jr = skuRow(june, p.getId());
         assertThat(jr).isNotNull();
         assertThat(jr.getSalesAmt()).isEqualByComparingTo("25.00");
-        assertThat(jr.getCostAmt()).isEqualByComparingTo("15.00");
-        assertThat(jr.getGrossProfit()).isEqualByComparingTo("10.00");
-        assertThat(jr.getMarginPct()).isEqualByComparingTo("40.00");
+        assertThat(jr.getCostAmt()).isEqualByComparingTo("17.50");
+        assertThat(jr.getGrossProfit()).isEqualByComparingTo("7.50");
+        assertThat(jr.getMarginPct()).isEqualByComparingTo("30.00");
 
         ReportDtos.GrossMarginResp july = reportService.grossMargin("2026-07", "sku");
         ReportDtos.GrossMarginRow yr = skuRow(july, p.getId());
-        assertThat(yr.getCostAmt()).isEqualByComparingTo("22.00");
-        assertThat(yr.getGrossProfit()).isEqualByComparingTo("8.00");
-        assertThat(july.getMonths()).contains("2026-06", "2026-07");
+        assertThat(yr.getCostAmt()).isEqualByComparingTo("21.00");
+        assertThat(yr.getGrossProfit()).isEqualByComparingTo("9.00");
+        assertThat(july.getMonths()).contains("2026-06", "2026-07", ReportService.PERIOD_ALL);
+
+        // 累计(旧版看板算法):销量 11 × 累计加权单价 70/20=3.5 = 38.5;销售额 55
+        ReportDtos.GrossMarginRow all = skuRow(reportService.grossMargin(ReportService.PERIOD_ALL, "sku"), p.getId());
+        assertThat(all.getSalesAmt()).isEqualByComparingTo("55.00");
+        assertThat(all.getCostAmt()).isEqualByComparingTo("38.50");
+        assertThat(all.getGrossProfit()).isEqualByComparingTo("16.50");
     }
 
     // ============================== 2. qty=0 成本调整行 → 单位成本变(附录C) ==============================
@@ -317,22 +325,103 @@ class ReportCostEngineTest extends BaseIntegrationTest {
         assertThat(replay.getPools().get(p.getId()).currentAvg()).isEqualByComparingTo("3");
     }
 
-    // ============================== 9. 负库存沿用最近均价 + 入库重建金额池(对齐冲刺0) ==============================
+    // ============================== 9. 超卖(负库存)照样按本月加权单价结转;下月沿用最近单价 ==============================
 
     @Test
-    void negativeStock_usesLastAvg_thenPurchaseRebuildsPool() {
+    void negativeStock_costsAtPeriodAvg_thenNextMonthCarriesLastAvg() {
         Product p = product("NG");
         Machine m = machine();
         purchase(p.getId(), "5", "3.0", t("2026-06-01T08:00:00"));
-        sale(m.getId(), p.getId(), "8", "40", "正常", t("2026-06-10T12:00:00")); // 超卖:成本 8×3=24(沿用均价)
+        sale(m.getId(), p.getId(), "8", "40", "正常", t("2026-06-10T12:00:00")); // 超卖:6 月单价 15/5=3 → 成本 24
         ReportDtos.GrossMarginRow row = skuRow(reportService.grossMargin("2026-06", "sku"), p.getId());
         assertThat(row.getCostAmt()).isEqualByComparingTo("24.00");
 
-        purchase(p.getId(), "10", "4.0", t("2026-06-20T08:00:00")); // 池重建:qty -3+10=7,val=40 → 40/7
-        sale(m.getId(), p.getId(), "1", "6", "正常", t("2026-06-25T12:00:00")); // 成本 5.7143
+        purchase(p.getId(), "10", "4.0", t("2026-06-20T08:00:00")); // 6 月入库变 15 件 55 元 → 单价 3.6667
+        sale(m.getId(), p.getId(), "1", "6", "正常", t("2026-06-25T12:00:00"));
         ReportDtos.GrossMarginRow row2 = skuRow(reportService.grossMargin("2026-06", "sku"), p.getId());
-        // 24 + 40/7 = 29.7143
-        assertThat(row2.getCostAmt()).isEqualByComparingTo("29.71");
+        // 全月一次加权:9 件 × 3.6667 = 33.00(旧版台账口径,月内先卖后进也按月单价)
+        assertThat(row2.getCostAmt()).isEqualByComparingTo("33.00");
+
+        // 7 月无入库,期初 6 件 × 3.6667 = 22 → 单价沿用 3.6667
+        sale(m.getId(), p.getId(), "2", "12", "正常", t("2026-07-02T12:00:00"));
+        ReportDtos.GrossMarginRow row3 = skuRow(reportService.grossMargin("2026-07", "sku"), p.getId());
+        assertThat(row3.getCostAmt()).isEqualByComparingTo("7.33");
+    }
+
+    // ============================== 9b. 无入库史 → 档案参考成本兜底(旧版「成本单价」) ==============================
+
+    @Test
+    void noPurchaseHistory_refCostFallback_countsGross() {
+        Product p = product("RF");
+        p.setRefCost(new BigDecimal("2.5"));
+        productMapper.updateById(p);
+        Machine m = machine();
+        sale(m.getId(), p.getId(), "4", "20", "正常", t("2026-07-01T10:00:00"));
+
+        ReportDtos.GrossMarginRow row = skuRow(reportService.grossMargin("2026-07", "sku"), p.getId());
+        assertThat(row.isHasCost()).isTrue();
+        assertThat(row.getCostAmt()).isEqualByComparingTo("10.00"); // 4 × 2.5
+        assertThat(row.getGrossProfit()).isEqualByComparingTo("10.00");
+
+        ReportDtos.StockRow stock = reportService.stock().getRows().stream()
+                .filter(r -> Objects.equals(r.getProductId(), p.getId())).findFirst().orElse(null);
+        assertThat(stock.getTotalQty()).isEqualByComparingTo("-4");
+        assertThat(stock.getUnitCost()).isEqualByComparingTo("2.5000");
+        assertThat(stock.isNegative()).isTrue(); // 卖了没进货:合计为负才亮红灯
+    }
+
+    // ============================== 9c. 一本账:没建机器账时,销售直接扣仓库列,机器列不出数 ==============================
+
+    @Test
+    void singleLedger_salesWithoutTransfer_reduceWarehouseNotMachine() {
+        Product p = product("SL");
+        Machine m = machine();
+        purchase(p.getId(), "10", "2.0", t("2026-06-01T08:00:00"));
+        sale(m.getId(), p.getId(), "3", "9", "正常", t("2026-06-03T10:00:00"));
+
+        ReportDtos.StockResp resp = reportService.stock();
+        ReportDtos.StockRow row = resp.getRows().stream()
+                .filter(r -> Objects.equals(r.getProductId(), p.getId())).findFirst().orElse(null);
+        assertThat(row.getTotalQty()).isEqualByComparingTo("7");       // 10 − 3
+        assertThat(row.getWarehouseQty()).isEqualByComparingTo("7");   // 没建机器账:销售直接扣仓库
+        assertThat(row.getMachineQty()).doesNotContainKey(m.getId()); // 机器列「—」
+        assertThat(row.isNegative()).isFalse();                        // 不再因 −3 的机器推算亮假红灯
+        assertThat(row.isLowStock()).isFalse();
+        assertThat(row.getAmount()).isEqualByComparingTo("14.00");
+
+        // 卖到只剩 2 件 → 库存不足预警(旧版看板 ≤3)
+        sale(m.getId(), p.getId(), "5", "15", "正常", t("2026-06-04T10:00:00"));
+        ReportDtos.StockResp resp2 = reportService.stock();
+        ReportDtos.StockRow row2 = resp2.getRows().stream()
+                .filter(r -> Objects.equals(r.getProductId(), p.getId())).findFirst().orElse(null);
+        assertThat(row2.getTotalQty()).isEqualByComparingTo("2");
+        assertThat(row2.isLowStock()).isTrue();
+        assertThat(resp2.getLowStockCount()).isGreaterThanOrEqualTo(1);
+        assertThat(resp2.getLowStockThreshold()).isEqualTo(ReportService.LOW_STOCK_THRESHOLD);
+    }
+
+    // ============================== 9d. 累计进销存:期初 0 / Σ入库 / Σ出库 / 期末,金额按累计单价 ==============================
+
+    @Test
+    void inventorySummary_cumulativeView() {
+        Product p = product("CU");
+        Machine m = machine();
+        purchase(p.getId(), "10", "3.0", t("2026-06-01T08:00:00"));
+        sale(m.getId(), p.getId(), "4", "20", "正常", t("2026-06-10T12:00:00"));
+        purchase(p.getId(), "10", "5.0", t("2026-07-01T08:00:00"));
+        sale(m.getId(), p.getId(), "6", "30", "正常", t("2026-07-08T12:00:00"));
+
+        ReportDtos.InventorySummaryResp all = reportService.inventorySummary(ReportService.PERIOD_ALL);
+        assertThat(all.getMonths()).endsWith(ReportService.PERIOD_ALL);
+        ReportDtos.InventorySummaryRow row = all.getRows().stream()
+                .filter(r -> Objects.equals(r.getProductId(), p.getId())).findFirst().orElse(null);
+        assertThat(row.getOpeningQty()).isEqualByComparingTo("0");
+        assertThat(row.getInQty()).isEqualByComparingTo("20");
+        assertThat(row.getInAmt()).isEqualByComparingTo("80.00");
+        assertThat(row.getOutQty()).isEqualByComparingTo("10");
+        assertThat(row.getOutAmt()).isEqualByComparingTo("40.00");     // 10 × 80/20
+        assertThat(row.getClosingQty()).isEqualByComparingTo("10");
+        assertThat(row.getClosingAmt()).isEqualByComparingTo("40.00"); // 期初 + 入库 − 出库
     }
 
     // ============================== 10. 成本重算回写(sale_record + ledger 快照) ==============================

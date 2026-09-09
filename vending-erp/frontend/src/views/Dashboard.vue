@@ -112,6 +112,7 @@ onMounted(async () => {
 const redCount = computed(
   () =>
     (stock.value?.negativeCount ?? 0) +
+    (stock.value?.lowStockCount ?? 0) +
     pendingAlias.value +
     priceChangeCount.value +
     prekitOverdue.value +
@@ -290,6 +291,10 @@ onMounted(async () => {
         🚨 <b>{{ stock.negativeCount }} 个 SKU 负库存</b> —— 可能漏录采购单,先补录再谈毛利
         <span class="go">去库存页处理 →</span>
       </div>
+      <div v-if="stock?.lowStockCount" class="alert a-amber" @click="router.push('/inventory')">
+        ⚠️ <b>{{ stock.lowStockCount }} 个商品库存不足</b>(结存 ≤ {{ stock.lowStockThreshold }} 件)—— 请及时补货
+        <span class="go">去库存页查看 →</span>
+      </div>
       <div v-if="pendingAlias" class="alert a-amber" @click="router.push('/import')">
         ⚠️ <b>{{ pendingAlias }} 个新商品待绑别名</b> —— 不绑毛利算不准
         <span class="go">去绑定 →</span>
@@ -344,7 +349,7 @@ onMounted(async () => {
         <span class="go">去钱账页核对 →</span>
       </div>
       <div v-if="!redCount" class="alert a-blue">
-        ✅ 红灯清零:无负库存 · 无待绑别名 · 无改价待确认 · 无超窗配货单 · 无清仓残余 · 无逾期应付 · 无差异挂起 · 无索赔超期 · 无在途超期 —— 台账健康,钱账干净
+        ✅ 红灯清零:无负库存 · 无库存不足 · 无待绑别名 · 无改价待确认 · 无超窗配货单 · 无清仓残余 · 无逾期应付 · 无差异挂起 · 无索赔超期 · 无在途超期 —— 台账健康,钱账干净
       </div>
     </div>
 

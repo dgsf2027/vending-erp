@@ -38,8 +38,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 报表服务(M1-6):毛利报表(SKU/机器 两维)+ 月度进销存汇总 + 库存查询 + 成本快照回写。
- * 口径全部来自 §13(毛利 = 实收 − 移动加权成本;结算=仅正常退款负;无采购史毛利显「—」)。
+ * 报表服务(M1-6):毛利报表(SKU/机器 两维)+ 进销存汇总(按月 / 累计)+ 库存查询 + 成本快照回写。
+ * 成本口径 = 旧版进销存台账搬运(CostEngine):加权单价 = (期初金额+入库金额)/(期初数量+入库数量),
+ * 参考成本兜底;收入口径沿用 §13(正常全额、退款负、兑换/线下 0、测试不计)。
  */
 @Slf4j
 @Service
@@ -48,6 +49,10 @@ public class ReportService {
 
     public static final String DIM_SKU = "sku";
     public static final String DIM_MACHINE = "machine";
+    /** 报表「累计」伪月份(旧版台账默认视图:期初至今全量,累计加权单价) */
+    public static final String PERIOD_ALL = "累计";
+    /** 库存预警阈值(旧版看板:期末结存 ≤3 为库存不足,≤0 为断货) */
+    public static final int LOW_STOCK_THRESHOLD = 3;
 
     private final CostEngine costEngine;
     private final ReportQueryMapper reportQueryMapper;
@@ -61,34 +66,31 @@ public class ReportService {
     public GrossMarginResp grossMargin(String month, String dim) {
         Replay replay = costEngine.replay();
         GrossMarginResp resp = new GrossMarginResp();
-        resp.setMonths(replay.getMonths());
+        resp.setMonths(withAll(replay.getMonths()));
         resp.setDataAsOf(reportQueryMapper.dataAsOf());
+        boolean byMachine = DIM_MACHINE.equals(dim);
+        resp.setDim(byMachine ? DIM_MACHINE : DIM_SKU);
         if (replay.getMonths().isEmpty()) {
             resp.setMonth(month);
-            resp.setDim(dim);
             return resp;
         }
         String m = StrUtil.isBlank(month) ? replay.getMonths().get(replay.getMonths().size() - 1) : month;
-        boolean byMachine = DIM_MACHINE.equals(dim);
         resp.setMonth(m);
-        resp.setDim(byMachine ? DIM_MACHINE : DIM_SKU);
-
-        Map<String, MonthAgg> source = byMachine ? replay.getMachineMonth() : replay.getSkuMonth();
         Map<Long, Product> products = loadProducts();
         Map<Long, Machine> machines = loadMachines();
+
+        // 聚合:按月 = 该月 MonthAgg;累计 = 各月销售额/销量求和,成本按累计加权单价 × 销量(旧版看板算法)
+        Map<Long, MonthAgg> source = PERIOD_ALL.equals(m)
+                ? cumulativeAgg(replay, byMachine)
+                : monthAgg(byMachine ? replay.getMachineMonth() : replay.getSkuMonth(), m);
 
         BigDecimal totalSales = BigDecimal.ZERO;
         BigDecimal totalCost = BigDecimal.ZERO;
         BigDecimal totalGross = BigDecimal.ZERO;
         BigDecimal costedSales = BigDecimal.ZERO;
         int noCostCount = 0;
-
-        String suffix = "" + m;
-        for (Map.Entry<String, MonthAgg> e : source.entrySet()) {
-            if (!e.getKey().endsWith(suffix)) {
-                continue;
-            }
-            long key = Long.parseLong(e.getKey().substring(0, e.getKey().indexOf('')));
+        for (Map.Entry<Long, MonthAgg> e : source.entrySet()) {
+            long key = e.getKey();
             MonthAgg agg = e.getValue();
             GrossMarginRow row = new GrossMarginRow();
             row.setKey(key == Replay.UNBOUND_KEY ? null : key);
@@ -142,12 +144,83 @@ public class ReportService {
         return resp;
     }
 
+    /** 某月的聚合:key(productId/machineId) → MonthAgg */
+    private static Map<Long, MonthAgg> monthAgg(Map<String, MonthAgg> source, String month) {
+        Map<Long, MonthAgg> result = new LinkedHashMap<>();
+        String suffix = Replay.KEY_SEP + month;
+        for (Map.Entry<String, MonthAgg> e : source.entrySet()) {
+            if (e.getKey().endsWith(suffix)) {
+                result.put(Replay.keyId(e.getKey()), e.getValue());
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 累计聚合(旧版看板/台账「累计」算法):销售额、销量 = 各月求和;
+     * 成本 = 销量 × 累计加权单价(Σ入库金额 ÷ Σ入库数量,参考成本兜底),而不是各月成本求和。
+     */
+    private static Map<Long, MonthAgg> cumulativeAgg(Replay replay, boolean byMachine) {
+        Map<Long, MonthAgg> result = new LinkedHashMap<>();
+        if (!byMachine) {
+            for (Map.Entry<String, MonthAgg> e : replay.getSkuMonth().entrySet()) {
+                long key = Replay.keyId(e.getKey());
+                MonthAgg sum = result.computeIfAbsent(key, k -> new MonthAgg());
+                sum.setSalesQty(sum.getSalesQty().add(e.getValue().getSalesQty()));
+                sum.setSalesAmt(sum.getSalesAmt().add(e.getValue().getSalesAmt()));
+            }
+            for (Map.Entry<Long, MonthAgg> e : result.entrySet()) {
+                Pool pool = replay.getPools().get(e.getKey());
+                BigDecimal avg = pool == null ? null : pool.currentAvg();
+                if (avg == null) {
+                    e.getValue().setNoCost(true);
+                } else {
+                    e.getValue().setCostAmt(e.getValue().getSalesQty().multiply(avg));
+                }
+            }
+            return result;
+        }
+        for (Map.Entry<String, MonthAgg> e : replay.getMachineMonth().entrySet()) {
+            long key = Replay.keyId(e.getKey());
+            MonthAgg sum = result.computeIfAbsent(key, k -> new MonthAgg());
+            sum.setSalesQty(sum.getSalesQty().add(e.getValue().getSalesQty()));
+            sum.setSalesAmt(sum.getSalesAmt().add(e.getValue().getSalesAmt()));
+        }
+        for (Map.Entry<Long, MonthAgg> e : result.entrySet()) {
+            Map<Long, BigDecimal> skuQty = replay.getMachineSkuQty().get(e.getKey());
+            BigDecimal cost = BigDecimal.ZERO;
+            if (skuQty != null) {
+                for (Map.Entry<Long, BigDecimal> q : skuQty.entrySet()) {
+                    Pool pool = replay.getPools().get(q.getKey());
+                    BigDecimal avg = pool == null ? null : pool.currentAvg();
+                    if (avg != null) {
+                        cost = cost.add(q.getValue().multiply(avg));
+                    }
+                }
+            }
+            e.getValue().setCostAmt(cost);
+            Integer noCostRows = replay.getMachineNoCostRows().get(e.getKey());
+            e.getValue().setNoCostSkuCount(noCostRows == null ? 0 : noCostRows);
+            e.getValue().setNoCost(noCostRows != null && noCostRows > 0);
+        }
+        return result;
+    }
+
+    /** 月份候选 = 真实月份 + 「累计」伪月(报表下拉多一个选项,页面结构不变) */
+    private static List<String> withAll(List<String> months) {
+        List<String> list = new ArrayList<>(months);
+        if (!months.isEmpty()) {
+            list.add(PERIOD_ALL);
+        }
+        return list;
+    }
+
     // ============================== 进销存汇总 ==============================
 
     public InventorySummaryResp inventorySummary(String month) {
         Replay replay = costEngine.replay();
         InventorySummaryResp resp = new InventorySummaryResp();
-        resp.setMonths(replay.getMonths());
+        resp.setMonths(withAll(replay.getMonths()));
         resp.setDataAsOf(reportQueryMapper.dataAsOf());
         if (replay.getMonths().isEmpty()) {
             resp.setMonth(month);
@@ -159,15 +232,11 @@ public class ReportService {
 
         InventorySummaryRow total = new InventorySummaryRow();
         total.setName("合计");
-        String suffix = "" + m;
-        for (Map.Entry<String, InvAgg> e : replay.getInvMonth().entrySet()) {
-            if (!e.getKey().endsWith(suffix)) {
-                continue;
-            }
-            long productId = Long.parseLong(e.getKey().substring(0, e.getKey().indexOf('')));
+        Map<Long, InvAgg> rows = PERIOD_ALL.equals(m) ? cumulativeInv(replay) : monthInv(replay, m);
+        for (Map.Entry<Long, InvAgg> e : rows.entrySet()) {
+            long productId = e.getKey();
             InvAgg agg = e.getValue();
-            Pool pool = replay.getPools().get(productId);
-            boolean hasCost = pool != null && pool.hasCost();
+            boolean hasCost = agg.getUnitCost() != null;
             Product p = products.get(productId);
             InventorySummaryRow row = new InventorySummaryRow();
             row.setProductId(productId);
@@ -204,12 +273,57 @@ public class ReportService {
         return resp;
     }
 
+    /** 某月的进销存行(productId → InvAgg) */
+    private static Map<Long, InvAgg> monthInv(Replay replay, String month) {
+        Map<Long, InvAgg> result = new LinkedHashMap<>();
+        String suffix = Replay.KEY_SEP + month;
+        for (Map.Entry<String, InvAgg> e : replay.getInvMonth().entrySet()) {
+            if (e.getKey().endsWith(suffix)) {
+                result.put(Replay.keyId(e.getKey()), e.getValue());
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 累计进销存(旧版台账默认视图):期初 0,入库 = Σ全部入库,出库 = Σ全部出库,期末 = 期初 + 入库 − 出库;
+     * 金额按累计加权单价:入库金额原值,出库成本 = 出库数量 × 单价,期末金额 = 期末数量 × 单价。
+     */
+    private static Map<Long, InvAgg> cumulativeInv(Replay replay) {
+        Map<Long, InvAgg> result = new LinkedHashMap<>();
+        for (Map.Entry<Long, Pool> e : replay.getPools().entrySet()) {
+            Pool pool = e.getValue();
+            InvAgg agg = new InvAgg();
+            BigDecimal avg = pool.currentAvg();
+            agg.setInQty(pool.getInbQty());
+            agg.setOutQty(pool.getOutQty());
+            agg.setClosingQty(pool.getQty());
+            agg.setUnitCost(avg);
+            if (avg != null) {
+                agg.setInAmt(pool.getInbAmt());
+                agg.setOutAmt(pool.getOutQty().multiply(avg));
+                agg.setClosingVal(pool.getQty().multiply(avg));
+            }
+            agg.setSnapshotTaken(true);
+            result.put(e.getKey(), agg);
+        }
+        return result;
+    }
+
     // ============================== 库存查询 ==============================
 
+    /**
+     * 库存查询(旧版一本账口径):
+     * 合计 = 期初 + 入库 − 销售 − 盘亏/报损(成本引擎累计池,转移单不进不出);
+     * 机器列 = 仅「建了机器账」(有转移单流水或快照锚点)的机器×SKU 才给推算数,其余「—」;
+     * 仓库列 = 合计 − 已建账机器现存(没建机器账的销售直接扣仓库);
+     * 负库存红灯 = 合计 <0 或 仓库 <0 或 已建账机器 <0;库存不足 = 在售且 0 ≤ 合计 ≤ 3(旧版看板预警)。
+     */
     public StockResp stock() {
         Replay replay = costEngine.replay();
         StockResp resp = new StockResp();
         resp.setDataAsOf(reportQueryMapper.dataAsOf());
+        resp.setLowStockThreshold(LOW_STOCK_THRESHOLD);
 
         List<Machine> machines = machineMapper.selectList(
                 new LambdaQueryWrapper<Machine>().orderByAsc(Machine::getId));
@@ -219,24 +333,19 @@ public class ReportService {
             col.setMachineName(machine.getMachineName());
             resp.getMachines().add(col);
         }
-        // 机器库存:每台机器全 SKU 推算(锚点+增量,M1-5)
+        // 机器库存:仅已建机器账的 SKU 推算(锚点+增量,M1-5)
         Map<Long, Map<Long, BigDecimal>> byMachine = new LinkedHashMap<>();
         for (Machine machine : machines) {
-            byMachine.put(machine.getId(), stockService.getMachineStockAll(machine.getId()));
+            byMachine.put(machine.getId(), stockService.getMachineStockAccounted(machine.getId()));
         }
 
         List<Product> products = productMapper.selectList(
                 new LambdaQueryWrapper<Product>().orderByAsc(Product::getSkuCode));
-        List<Long> productIds = new ArrayList<>();
-        for (Product p : products) {
-            productIds.add(p.getId());
-        }
-        Map<Long, BigDecimal> warehouse = productIds.isEmpty()
-                ? new LinkedHashMap<>() : stockService.getWarehouseStockBatch(productIds);
-
         BigDecimal warehouseAmount = BigDecimal.ZERO;
         BigDecimal machineAmount = BigDecimal.ZERO;
         int negativeCount = 0;
+        int lowStockCount = 0;
+        BigDecimal threshold = BigDecimal.valueOf(LOW_STOCK_THRESHOLD);
         for (Product p : products) {
             StockRow row = new StockRow();
             row.setProductId(p.getId());
@@ -244,10 +353,10 @@ public class ReportService {
             row.setName(p.getProductName());
             row.setCategory(p.getCategory());
             row.setProductStatus(p.getProductStatus());
-            BigDecimal wh = nvl(warehouse.get(p.getId()));
-            row.setWarehouseQty(wh);
+            Pool pool = replay.getPools().get(p.getId());
+            BigDecimal total = pool == null ? BigDecimal.ZERO : pool.getQty();
             BigDecimal machineSum = BigDecimal.ZERO;
-            boolean negative = wh.signum() < 0;
+            boolean negative = false;
             for (Machine machine : machines) {
                 BigDecimal q = byMachine.get(machine.getId()).get(p.getId());
                 if (q == null) {
@@ -259,12 +368,18 @@ public class ReportService {
                     negative = true;
                 }
             }
-            row.setTotalQty(wh.add(machineSum));
-            Pool pool = replay.getPools().get(p.getId());
-            BigDecimal unitCost = pool == null ? null : pool.currentAvg();
+            BigDecimal wh = total.subtract(machineSum);
+            row.setWarehouseQty(wh);
+            row.setTotalQty(total);
+            if (wh.signum() < 0 || total.signum() < 0) {
+                negative = true;
+            }
+            BigDecimal unitCost = pool == null
+                    ? (p.getRefCost() != null && p.getRefCost().signum() > 0 ? p.getRefCost() : null)
+                    : pool.currentAvg();
             row.setUnitCost(unitCost == null ? null : unitCost.setScale(4, RoundingMode.HALF_UP));
             if (unitCost != null) {
-                row.setAmount(scale2(row.getTotalQty().multiply(unitCost)));
+                row.setAmount(scale2(total.multiply(unitCost)));
                 warehouseAmount = warehouseAmount.add(wh.multiply(unitCost));
                 machineAmount = machineAmount.add(machineSum.multiply(unitCost));
             }
@@ -272,13 +387,29 @@ public class ReportService {
             if (negative) {
                 negativeCount++;
             }
+            boolean onSale = p.getProductStatus() == null || "在售".equals(p.getProductStatus());
+            boolean low = onSale && pool != null && total.signum() >= 0 && total.compareTo(threshold) <= 0;
+            row.setLowStock(low);
+            if (low) {
+                lowStockCount++;
+            }
             resp.getRows().add(row);
         }
         resp.setWarehouseAmount(scale2(warehouseAmount));
         resp.setMachineAmount(scale2(machineAmount));
         resp.setTotalAmount(scale2(warehouseAmount.add(machineAmount)));
         resp.setNegativeCount(negativeCount);
+        resp.setLowStockCount(lowStockCount);
         return resp;
+    }
+
+    /** 仓库账面(盘点用):与库存页「仓库」列同一个数(旧版:账面结存 = 台账期末结存) */
+    public Map<Long, BigDecimal> warehouseBookQty() {
+        Map<Long, BigDecimal> result = new LinkedHashMap<>();
+        for (StockRow row : stock().getRows()) {
+            result.put(row.getProductId(), row.getWarehouseQty());
+        }
+        return result;
     }
 
     public List<StockLedgerRow> productLedger(Long productId, int limit) {
@@ -347,24 +478,27 @@ public class ReportService {
         resp.setRefPrice(p.getRefPrice());
         resp.setDataAsOf(asOf);
 
-        // ---- 两级库存 ----
-        BigDecimal wh = nvl(stockService.getWarehouseStock(productId));
-        resp.setWarehouseQty(wh);
+        // ---- 库存(与库存页同口径):合计 = 一本账期末结存;机器 = 仅已建机器账的机器;仓库 = 合计 − 机器 ----
+        Pool pool = replay.getPools().get(productId);
+        BigDecimal total = pool == null ? BigDecimal.ZERO : pool.getQty();
         List<Machine> machines = machineMapper.selectList(
                 new LambdaQueryWrapper<Machine>().orderByAsc(Machine::getId));
         BigDecimal machineSum = BigDecimal.ZERO;
         Map<Long, BigDecimal> stockByMachine = new LinkedHashMap<>();
         for (Machine machine : machines) {
-            BigDecimal q = stockService.getMachineStock(machine.getId(), productId);
-            if (q != null && q.signum() != 0) {
+            BigDecimal q = stockService.getMachineStockAccounted(machine.getId()).get(productId);
+            if (q != null) {
                 stockByMachine.put(machine.getId(), q);
                 machineSum = machineSum.add(q);
             }
         }
+        BigDecimal wh = total.subtract(machineSum);
+        resp.setWarehouseQty(wh);
         resp.setMachineQtyTotal(machineSum);
-        resp.setTotalQty(wh.add(machineSum));
-        Pool pool = replay.getPools().get(productId);
-        BigDecimal unitCost = pool == null ? null : pool.currentAvg();
+        resp.setTotalQty(total);
+        BigDecimal unitCost = pool == null
+                ? (p.getRefCost() != null && p.getRefCost().signum() > 0 ? p.getRefCost() : null)
+                : pool.currentAvg();
         resp.setHasCost(unitCost != null);
         if (unitCost != null) {
             resp.setUnitCost(unitCost.setScale(4, RoundingMode.HALF_UP));
@@ -595,8 +729,8 @@ public class ReportService {
         }
         resp.getTopSkus().addAll(tops.subList(0, Math.min(8, tops.size())));
 
-        // ---- 机内库存(推算)+ 货道 planogram + 补货史 ----
-        Map<Long, BigDecimal> stockBySku = stockService.getMachineStockAll(machineId);
+        // ---- 机内库存(推算,仅已建机器账的 SKU;没导过补货记录/没盘过点的 SKU 显「—」)+ 货道 planogram + 补货史 ----
+        Map<Long, BigDecimal> stockBySku = stockService.getMachineStockAccounted(machineId);
         BigDecimal stockSum = BigDecimal.ZERO;
         for (BigDecimal q : stockBySku.values()) {
             stockSum = stockSum.add(nvl(q));

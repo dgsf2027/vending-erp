@@ -176,7 +176,7 @@ class FinReportTest extends BaseIntegrationTest {
     @Test
     @DisplayName("① 五分项来源正确 + §13.1 公式恒等:库存+待结算+现金+索赔应收−应付=净家底,各项下钻列表在位")
     void fivePartsAndFormulaIdentity() {
-        // 库存:采购 10 × 3.5 = 35
+        // 库存:采购 10,卖出净 2 件(正常 1 + 退款 −1 + 兑换 1 + 正常 1)→ 一本账结存 8 × 3.5 = 28
         Product p = product("家底可乐");
         stockWarehouse(p.getId(), "10");
         // 待结算(PLATFORM):正常 10 − 退款 3 = 7;兑换/已结算不参与
@@ -194,16 +194,16 @@ class FinReportTest extends BaseIntegrationTest {
         supplier("陈老板", "120");
 
         FinReportDtos.AssetSnapshotResp resp = assetSnapshotService.current();
-        assertMoney("35.00", resp.getInventoryAmount(), "①库存=10×3.5");
+        assertMoney("28.00", resp.getInventoryAmount(), "①库存=(10−2)×3.5(一本账:销售直接扣库存)");
         assertMoney("7.00", resp.getPlatformPending(), "②待结算=正常10−退款3(兑换/已结算不算)");
         assertMoney("150.00", resp.getCashTotal(), "③现金=Σ真实账户余额");
         assertMoney("500.00", resp.getClaimReceivable(), "④索赔应收=申请中");
         assertMoney("120.00", resp.getPayableTotal(), "⑤应付=供应商期初");
-        assertMoney("572.00", resp.getNetAsset(), "净家底=35+7+150+500−120(§13.1 恒等)");
+        assertMoney("565.00", resp.getNetAsset(), "净家底=28+7+150+500−120(§13.1 恒等)");
 
         // 下钻来源列表
         assertTrue(resp.getInventoryRows().stream().anyMatch(r -> p.getId().equals(r.getProductId())
-                && r.getAmount().compareTo(new BigDecimal("35.00")) == 0), "库存下钻含 SKU 行");
+                && r.getAmount().compareTo(new BigDecimal("28.00")) == 0), "库存下钻含 SKU 行");
         assertEquals(1, resp.getPendingRows().size(), "待结算下钻按业务月分组");
         assertMoney("7.00", resp.getPendingRows().get(0).getAmount(), "待结算下钻金额");
         assertTrue(resp.getCashRows().stream().anyMatch(r -> r.getAccountId().equals(acc1)
@@ -226,8 +226,8 @@ class FinReportTest extends BaseIntegrationTest {
         assertMoney("0.00", resp.getPlatformPending(), "UNSET 待结算恒 0(不出正式数)");
         assertEquals(SettleModeService.UNSET_BANNER, resp.getSettleBanner(), "横幅原文传导");
         assertTrue(resp.getPendingRows().isEmpty(), "UNSET 不出待结算下钻");
-        // 净家底仍恒等(待结算按 0 参与)
-        assertMoney("14.00", resp.getNetAsset(), "净家底=库存14+0+0+0−0");
+        // 净家底仍恒等(待结算按 0 参与):库存 = (4 − 1) × 3.5 = 10.5
+        assertMoney("10.50", resp.getNetAsset(), "净家底=库存10.5+0+0+0−0");
 
         FinReportDtos.ProfitResp profit = profitReportService.monthly(month(0));
         assertEquals(SettleModeService.UNSET_BANNER, profit.getSettleBanner(), "利润表同样传导横幅");

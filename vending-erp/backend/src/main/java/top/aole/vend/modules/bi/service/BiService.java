@@ -377,15 +377,10 @@ public class BiService {
             }
         }
         DemandStatsService.Snapshot demand = demandStatsService.compute();
-        // 当前总库存(仓库+机器):周转天数分子
-        List<Long> ids = new ArrayList<>(byProduct.keySet());
-        Map<Long, BigDecimal> warehouse = ids.isEmpty() ? Collections.emptyMap()
-                : stockService.getWarehouseStockBatch(ids);
-        Map<Long, BigDecimal> machineTotal = new HashMap<>();
-        for (Machine m : loadMachines().values()) {
-            for (Map.Entry<Long, BigDecimal> e : stockService.getMachineStockAll(m.getId()).entrySet()) {
-                machineTotal.merge(e.getKey(), nvl(e.getValue()), BigDecimal::add);
-            }
+        // 当前总库存(一本账期末结存 = 期初 + 入库 − 销售 − 损耗,与库存页「合计」同数):周转天数分子
+        Map<Long, BigDecimal> totalStockBySku = new HashMap<>();
+        for (Map.Entry<Long, CostEngine.Pool> e : ctx.replay.getPools().entrySet()) {
+            totalStockBySku.put(e.getKey(), e.getValue().getQty());
         }
         for (Map.Entry<Long, Agg> e : byProduct.entrySet()) {
             Product p = products.get(e.getKey());
@@ -407,7 +402,7 @@ public class BiService {
             DemandStats ds = demand.global.get(e.getKey());
             BigDecimal daily = ds == null ? null : ds.getAvgDaily();
             if (daily != null && daily.signum() > 0) {
-                BigDecimal totalStock = nvl(warehouse.get(e.getKey())).add(nvl(machineTotal.get(e.getKey())));
+                BigDecimal totalStock = nvl(totalStockBySku.get(e.getKey()));
                 if (totalStock.signum() >= 0) {
                     row.setStockDays(totalStock.divide(daily, 1, RoundingMode.HALF_UP));
                 }

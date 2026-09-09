@@ -21,6 +21,7 @@ import top.aole.vend.modules.doc.service.DocService;
 import top.aole.vend.modules.imports.domain.entity.ImportBatch;
 import top.aole.vend.modules.period.service.PeriodLockService;
 import top.aole.vend.modules.report.service.CostEngine;
+import top.aole.vend.modules.report.service.ReportService;
 import top.aole.vend.modules.stock.domain.entity.MachineStockSnapshot;
 import top.aole.vend.modules.stock.service.StockService;
 import top.aole.vend.modules.stocktake.domain.entity.Stocktake;
@@ -89,6 +90,7 @@ public class StocktakeService {
     private final DocService docService;
     private final PeriodLockService periodLockService;
     private final CostEngine costEngine;
+    private final ReportService reportService;
     private final OpLogService opLogService;
 
     // ============================== 创建(快照账面) ==============================
@@ -138,7 +140,14 @@ public class StocktakeService {
             List<Long> productIds = productMapper.selectList(new LambdaQueryWrapper<Product>()
                             .select(Product::getId).orderByAsc(Product::getId))
                     .stream().map(Product::getId).collect(Collectors.toList());
-            book = stockService.getWarehouseStockBatch(productIds);
+            // 旧版口径:账面结存 = 台账期末结存(一本账),与库存页「仓库」列同一个数;
+            // 不再用 Σ仓库流水(没导补货记录时它只涨不跌,账面全是虚高)
+            Map<Long, BigDecimal> ledgerBook = reportService.warehouseBookQty();
+            book = new LinkedHashMap<>();
+            for (Long productId : productIds) {
+                BigDecimal q = ledgerBook.get(productId);
+                book.put(productId, q == null ? BigDecimal.ZERO : q);
+            }
         } else {
             book = new LinkedHashMap<>(stockService.getMachineStockAll(req.getMachineId()));
             // 货道已绑但从未有流水/快照的 SKU 也纳入(账面 0,现场可能盘出实货)
@@ -321,7 +330,7 @@ public class StocktakeService {
         List<StocktakeItem> diffs = items.stream()
                 .filter(i -> i.getDiffQty().signum() != 0).collect(Collectors.toList());
 
-        // 差异计价:移动加权成本(CostEngine 与毛利报表同源);无成本史 SKU=NULL(显「—」,禁 0 加权)
+        // 差异计价:累计加权单价(CostEngine 与库存页/毛利报表同源,参考成本兜底);无成本 SKU=NULL(显「—」)
         Map<Long, CostEngine.Pool> pools = costEngine.replay().getPools();
         List<String> bossRows = new ArrayList<>();
         for (StocktakeItem item : diffs) {

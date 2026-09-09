@@ -15,7 +15,7 @@ const router = useRouter()
 const loading = ref(false)
 const data = ref<StockResp | null>(null)
 const keyword = ref('')
-const filterMode = ref<'all' | 'negative' | 'active'>('all')
+const filterMode = ref<'all' | 'negative' | 'active' | 'low'>('all')
 
 async function load() {
   loading.value = true
@@ -32,6 +32,7 @@ const rows = computed(() => {
   let list = data.value.rows
   if (filterMode.value === 'negative') list = list.filter((r) => r.negative)
   if (filterMode.value === 'active') list = list.filter((r) => Number(r.totalQty) !== 0)
+  if (filterMode.value === 'low') list = list.filter((r) => r.lowStock)
   const kw = keyword.value.trim().toLowerCase()
   if (kw) {
     list = list.filter(
@@ -97,7 +98,7 @@ async function doRecalc() {
     <el-alert type="info" :closable="false" class="mb-12px">
       <template #title>
         库存不能手改——只能被单据改(采购入库/出库上架/销售/盘点/报损),每个数字点开都是流水。
-        <b>仓库列 = 自己账(Σ流水),机器列 = 推算账(最近快照 + 之后按业务时间增量)</b>
+        <b>合计 = 期初 + 入库 − 销售 − 盘亏报损(一本账);机器列只对导过补货记录/盘过点的机器推算,其余「—」;仓库列 = 合计 − 机器现存</b>
       </template>
     </el-alert>
 
@@ -117,6 +118,9 @@ async function doRecalc() {
         >
           🚨 负库存 {{ data?.negativeCount ?? 0 }}
         </el-check-tag>
+        <el-check-tag :checked="filterMode === 'low'" @change="filterMode = 'low'">
+          ⚠️ 库存不足 {{ data?.lowStockCount ?? 0 }}
+        </el-check-tag>
         <el-input
           v-model="keyword"
           placeholder="搜商品名 / 编码…"
@@ -124,7 +128,7 @@ async function doRecalc() {
           style="width: 220px; margin-left: auto"
         />
         <el-tooltip
-          content="⚡ 何时需要点:大量补录历史采购 / 别名回补历史销售之后点一次,把移动加权成本快照刷回销售记录与流水。日常报表动态算,不点也不影响。"
+          content="⚡ 何时需要点:大量补录历史采购 / 别名回补历史销售之后点一次,把加权成本快照刷回销售记录与流水。日常报表动态算,不点也不影响。"
           placement="top"
           :show-after="100"
         >
@@ -180,7 +184,7 @@ async function doRecalc() {
         <el-table-column label="加权单位成本" align="right" width="110">
           <template #default="{ row }">
             <span v-if="row.unitCost != null">¥{{ row.unitCost }}</span>
-            <el-tooltip v-else content="无采购史:先补录采购入库,成本才有依据(禁 0 参与加权)">
+            <el-tooltip v-else content="无入库史且档案没填参考成本:补录采购入库,或在商品档案填「参考成本」">
               <span class="text-amber-600">—(成本待补)</span>
             </el-tooltip>
           </template>
@@ -192,6 +196,7 @@ async function doRecalc() {
           <template #default="{ row }">
             <el-tag v-if="row.negative" type="danger" size="small">🚨 负库存</el-tag>
             <el-tag v-else-if="Number(row.totalQty) === 0" type="info" size="small">无库存</el-tag>
+            <el-tag v-else-if="row.lowStock" type="warning" size="small">⚠️ 库存不足</el-tag>
             <el-tag v-else type="success" size="small">正常</el-tag>
           </template>
         </el-table-column>
@@ -214,7 +219,7 @@ async function doRecalc() {
     </el-card>
 
     <p class="text-11px text-gray-400 text-center mt-8px">
-      — 机器列 = 最近后台快照 + 之后单据/出货增量推算(与导入顺序无关);负库存 = 待补录采购红灯 —
+      — 机器列 = 最近后台快照/盘点锚点 + 之后转移单与出货增量推算(只对建了机器账的机器);负库存 = 待补录采购红灯;库存不足 = 结存 ≤ {{ data?.lowStockThreshold ?? 3 }} 件 —
     </p>
 
     <!-- 单品流水抽屉 -->

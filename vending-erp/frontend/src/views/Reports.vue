@@ -34,18 +34,21 @@ async function loadAll() {
   invLoading.value = true
   profitLoading.value = true
   try {
+    // 「累计」是毛利/进销存的伪月份(期初至今全量);利润表按入账月出表,累计视图下取最近月份
+    const plPeriod = month.value && month.value !== '累计' ? month.value : undefined
     const [sku, machine, summary, pl] = await Promise.all([
       reportApi.grossMargin(month.value || undefined, 'sku'),
       reportApi.grossMargin(month.value || undefined, 'machine'),
       reportApi.inventorySummary(month.value || undefined),
-      finreportApi.profit(month.value || undefined),
+      finreportApi.profit(plPeriod),
     ])
     gmSku.value = sku
     gmMachine.value = machine
     inv.value = summary
     profit.value = pl
-    // 月份候选 = 销售口径月 ∪ 利润表入账月(利润表可能只有流水没销售)
-    months.value = Array.from(new Set([...sku.months, ...pl.months])).sort()
+    // 月份候选 = 销售口径月 ∪ 利润表入账月(利润表可能只有流水没销售);「累计」固定排最后
+    const real = Array.from(new Set([...sku.months, ...pl.months])).filter((m) => m !== '累计').sort()
+    months.value = sku.months.includes('累计') ? [...real, '累计'] : real
     if (!month.value) month.value = sku.month || pl.period
   } finally {
     gmLoading.value = false
@@ -74,8 +77,8 @@ const fmtQty = (v: number | null | undefined) => (v == null ? '—' : Number(v).
     </div>
     <el-alert type="info" :closable="false" class="mb-12px">
       <template #title>
-        口径写死(§13):毛利 = <b>实收金额 − 移动加权成本</b> · 销售额 = 正常 + 退款(负) ·
-        兑换收入 0 但计成本 · 测试不计 · 无采购史 SKU 毛利显「—(成本待补)」不进合计
+        口径:毛利 = <b>实收金额 − 加权成本</b>(加权单价 = (期初金额 + 入库金额) ÷ (期初数量 + 入库数量),无入库史用档案参考成本兜底)·
+        销售额 = 正常 + 退款(负) · 兑换收入 0 但计成本 · 测试不计 · 仍无成本的 SKU 毛利显「—(成本待补)」不进合计 · 月份选「累计」看期初至今全量
       </template>
     </el-alert>
 
@@ -139,7 +142,7 @@ const fmtQty = (v: number | null | undefined) => (v == null ? '—' : Number(v).
             <el-table-column label="加权成本" align="right" width="110">
               <template #default="{ row }">
                 <span v-if="row.hasCost">¥{{ fmt(row.costAmt) }}</span>
-                <el-tooltip v-else content="无采购史,先补录采购入库(禁 0 参与加权,§13)">
+                <el-tooltip v-else content="无入库史且档案没填参考成本:补录采购入库,或在商品档案填「参考成本」">
                   <span class="text-amber-600">—(成本待补)</span>
                 </el-tooltip>
               </template>
@@ -216,7 +219,7 @@ const fmtQty = (v: number | null | undefined) => (v == null ? '—' : Number(v).
         <!-- 进销存汇总 -->
         <el-tab-pane label="进销存汇总" name="inventory">
           <p class="text-12px text-gray-500 mt-0">
-            全局口径(仓库+机器合计,销售即出库);金额按移动加权成本;期末上月 = 期初下月,连续结转。
+            一本账口径(仓库+机器合计,销售即出库);加权单价 = (期初金额 + 入库金额) ÷ (期初数量 + 入库数量),出库金额 = 出库数量 × 单价;期末上月 = 期初下月,连续结转;月份选「累计」为期初至今全量。
           </p>
           <el-table :data="inv?.rows ?? []" v-loading="invLoading" size="small" max-height="520">
             <el-table-column label="商品" min-width="180" fixed>
