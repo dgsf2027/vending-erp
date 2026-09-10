@@ -1,88 +1,94 @@
-# 售卖机 ERP · 上线 runbook(ole 平台)
+# 售卖机 ERP · 上线 runbook（A 机 · 合 main 即上线）
 
-> 目标:把售卖机 ERP 作为 ole 平台新产品 `vend` 上线到阿里云 ECS。
-> 部署包已备好(本目录);标 🙋 的步骤**必须你本人做**(我不代输密码/不代付款/不代备案),标 🤖 的是授权后我能替你做的。
+> **2026-09-10 重写。** 旧版是 2026-08-07 写给阿里云 ECS（121.40.120.226 · /data/apps/vend/ · vend.aoleplat.com）的「rsync + 手工 compose」手册。
+> 那台 ECS 2026-08-18 已停用，全部系统搬到负责人家里的 Mac（**A 机** · Docker + Cloudflare Tunnel），部署机制换成 **push 即部署**。
+> 照旧手册跑会打到已停用的 ECS。本目录的 `dns-records.md` / `caddy-site.conf` / `flyway-prod-checklist.md` 同为 ECS 时代文件，只作考古。
+> 机制真相源：dev-standards `规则分册/§3.7-部署架构迁移-20260818-家用Mac自动拉取.md`；清单真相源：ops-monitoring `deploy/systems.tsv` 的 `vend` 行。
 
-> **✅ 决策已定(2026-08-07)**:①数据库=**自带 mysql:8.0 容器**(不走共享 RDS,数据物理隔离);②**先合 main 再从 main 部署**;③结算模式上线 **UNSET**(设置中心再切)。
-> **⚠ 两处 runbook 早期笔误已修**:后端实际读 `DB_URL/DB_USERNAME/DB_PASSWORD`(非 `SPRING_DATASOURCE_*`);Caddy 反代目标是容器网络内的 `vend-web:80`(非宿主 `127.0.0.1:8085`)。以 docker-compose.prod.yml / .env.prod.example / caddy-site.conf 现内容为准。
+## 一句话
 
-## 关键参数(ole 规范)
+**改代码 → 开分支 → PR 合进 `main` → 最多等 5 分钟 → 上线。** 不 rsync、不 ssh 服务器、不自己跑 docker 部署命令。
+
+A 机 launchd 任务 `com.yh1.auto-deploy` 每 300 秒跑一次 `deploy.sh --auto`，对 vend 固定四步：
+`git fetch` + `merge --ff-only` 拉 `origin/main` → `docker compose build` → `up -d` → HTTP 探活；成败推 Bark 到负责人手机。
+远程没有新提交就一行「代码无更新，跳过重建」，什么都不动。
+
+## 关键参数（A 机）
 
 | 项 | 值 |
 |---|---|
-| 产品 slug | `vend` |
-| ECS | `121.40.120.226`(4C8G Ubuntu22,图南等产品**共享生产机**) |
-| 部署目录 | `/data/apps/vend/` |
-| 宿主端口 | `8085`(仅本机,中央 Caddy 反代) |
-| 域名 | `vend.aoleplat.com`(备案后启用) |
-| 数据库 | 建议独立库 `vend_prod`(共享 RDS 实例)· 表前缀 `yc_vend_` · 历史表 `flyway_schema_history_vend` |
+| 部署机 | A 机（家里 Mac Studio · M2 Max）。`ops where` 一眼确认 |
+| 清单名 | `vend` —— `ops status vend` / `ops logs vend` / `ops deploy vend` 都用它 |
+| 远程仓 · 跟踪分支 | `github.com/dgsf2027/vending-erp` · `main`（2026-08-31 随生态平台 16 仓从 dgsd2025 迁到 dgsf2027） |
+| A 机检出 | `~/系统开发/智慧园区`（仓根；`vending-erp/` 是子目录） |
+| compose 执行目录 | `~/deploy-links/vending-erp/deploy` → 软链到 `~/系统开发/智慧园区/vending-erp/deploy`。必须走纯 ASCII 路径：中文目录会让 Docker bake 报 `sharedkey contains non-printable ASCII` |
+| compose 文件 | `docker-compose.prod.yml` + `docker-compose.local.yml` 叠加（local 只多一条 `8089:80`） |
+| compose 项目名 | `vending`（`.env` 里 `COMPOSE_PROJECT_NAME=vending`。售卖机 / 租凭 / 洪源润三家的 compose 目录都叫 `deploy`，不设项目名会互相当孤儿删掉） |
+| 容器 | `vend-mysql`（mysql:8.0 · 库 `vend_prod` · 卷 `vending_vend_mysql_data`）· `vend-server`（8081，仅容器网内）· `vend-web`（nginx，宿主 8089）。三个都是 `restart: unless-stopped` |
+| 本机入口 | `http://127.0.0.1:8089/`，探活 `GET /api/v1/health` → `{"code":200,...}` |
+| 公网入口 | `https://vend.vvaix.com`（Cloudflare Tunnel，`~/.cloudflared/config.yml` ingress → `localhost:8089`；Cloudflare Access 已撤，直达系统自身登录页） |
+| 门户 SSO | 生态管理平台 `eco.vvaix.com` 卡片免登；租户白名单 `SSO_ALLOWED_TENANT_IDS`（生态平台 = `T000004`） |
+| `.env` | `deploy/.env`（600 权限 · 不入库 · 永不进对话）。模板 `.env.prod.example`，变量名清单以模板为准 |
 
-## ⚠ 三个只有你能做的前置
+## 日常上线（默认路径）
 
-1. 🙋 **确认备案**:阿里云备案管理查 `aoleplat.com` 是否已通过。未过则上线后只能用 IP+端口访问。
-2. 🙋 **建生产库 + 授权**:在 RDS 上 `CREATE DATABASE vend_prod ...` + 给 `aole_uat` 授权(SQL 见 flyway-prod-checklist.md)。
-3. 🙋 **DNS**:阿里云 DNS 加一条 A 记录(见 dns-records.md)。
+1. 开分支改代码；前端 `pnpm typecheck`（vue-tsc），后端 `mvn -s settings.xml test`。
+2. PR 合进 `main`（一功能一分支一 PR）。
+3. 最多等 5 分钟。看进度：`ops logs vend`，或 A 机 `~/系统开发/运维监控/deploy/logs/deploy-<日期>.log` 里找 `部署 vend`。
+4. 验：
+   - `ops status vend` 三个容器 Up；`curl -s http://127.0.0.1:8089/api/v1/health` 返回 code 200；
+   - 浏览器开 `https://vend.vvaix.com`，**侧栏底部「版本 xxxxxxx」= 刚合并的提交号**（deploy.sh 构建时自动注入 `GIT_SHA/GIT_DATE/GIT_BRANCH`；显示 `unknown` = 这份镜像不是自动部署构建出来的）；
+   - 改了前端却看不到新界面：刷新一次再查版本号。nginx 对 `index.html` 是 `no-store`，正常刷新就会拿到新 hash 的 js，不需要清缓存。
 
-## 上线步骤
+## 什么情况不会自动上线（先查这三条）
 
-### 第 0 步 · 决策(建议先拍板)
-- 🙋 独立库 `vend_prod` 还是共享 `aole_uat`?(推荐独立,物理隔离)
-- 🙋 结算模式:上线先 UNSET,还是已核实可直接定 PLATFORM/DIRECT?
-- 🙋 是否走 ole 正规路径(GitLab CI 自动部署)还是手动 SSH 部署?
-  - **ole 正规路径**:用 `ole-new-project` 建 GitLab 双仓库 → 推代码 → main 分支 CI 自动部署。最规范,但需 GitLab 权限,且本项目现在是本地 git,要先迁到 ole GitLab。
-  - **手动 SSH 部署**:直接把代码 rsync 上 ECS `docker compose up`。快,但绕过 CI,且动的是共享生产机。
+| 日志里的话 | 原因 | 处置 |
+|---|---|---|
+| `代码无更新，跳过重建（自动模式）` | 改动没进 `main`（还在分支 / PR 没合） | 合 PR |
+| `远程有 N 个新提交，但工作树有未提交改动` + `已中止 vend 的部署` + Bark 告警 | A 机检出 `~/系统开发/智慧园区` 被人直接改了。脏树会让 vend 的自动部署从此每轮跳过 | 到 A 机 `git status` 收编或丢弃；开发请在别的检出 / worktree 做，A 机那份只当部署树 |
+| `构建失败，容器保持原样没动` | Dockerfile / 依赖 / 磁盘水位 | 线上仍是旧版本，服务没断。看 `ops logs vend` 修好再 push；自动模式 30 分钟后重试，3 次仍失败就等新提交 |
 
-### 第 1 步 · 准备 .env(🙋 你填密码)
+## 数据库与 schema
+
+- Flyway 跟着 `vend-server` 启动自动跑（`application.yml` 里 `spring.flyway.enabled: true`）：`backend/src/main/resources/db/migration/` 下新的 `V*.sql` 合进 main 后随下一次部署生效，**不需要人手 apply**（与图南「自动部署不跑 migration」不同，那是 drizzle 的口径）。
+- 破坏性变更（删列 / 改类型 / 大表回填）合并前先备份：`ops dump vend`。改数据走 `ops db vend "SQL"` / `ops sql vend <文件>`（自动备份 + 审计留痕 + Bark）。
+- 🔴 **没有一键回滚**：出事只能 `git revert` 再 push，再等一次 5 分钟构建；`ops rollback vend` 只能退镜像到上一版 `:prev-vending`，**schema 改动退不回来**，谨慎度按此定。
+
+## 手工重建（只在需要时）
+
 ```bash
-cd /data/apps/vend
-cp .env.prod.example .env && chmod 600 .env
-# 编辑 .env 填 RDS 密码等(AI 不代填)
+ops deploy vend              # 走同一套 deploy.sh：拉 main + build + up + 探活，版本号自动注入
+ops deploy vend --no-cache   # 依赖 / 基础镜像疑似脏了才用，慢
+ops rollback vend            # 退到构建前打的 :prev-vending 镜像，约 1 分钟，不回 schema
 ```
 
-### 第 2 步 · 部署 app(🤖 授权后我做 / 或你照做)
+绕过 deploy.sh 直接 `docker compose build`，侧栏版本号会是 `unknown`；要显示得先 export：
+
 ```bash
-# 在 ECS /data/apps/vend/ 下(代码已 rsync 上来)
-# 页面版本水印:把当前提交写进前端(侧栏底部「版本 xxxxxxx」,点开 GitHub 提交);不 export 则显示 unknown
+cd ~/deploy-links/vending-erp/deploy
 export GIT_SHA=$(git rev-parse --short HEAD) GIT_DATE=$(git log -1 --format=%cI) GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-docker compose -f deploy/docker-compose.prod.yml build --no-cache
-docker compose -f deploy/docker-compose.prod.yml up -d
-# 后端首启 Flyway 自动建 40 表(见 flyway-prod-checklist.md 验证)
-docker logs vend-server --tail 50   # 看到 Undertow started on 8081 + flyway 1.0.17 success
+docker compose -f docker-compose.prod.yml -f docker-compose.local.yml build
+docker compose -f docker-compose.prod.yml -f docker-compose.local.yml up -d
 ```
-⚠ 若 8-jre 运行报错(个别依赖需 Java11+),把 backend.Dockerfile 运行阶段基础镜像换 `eclipse-temurin:17-jre` 重 build。
 
-### 第 3 步 · 接中央 Caddy(🤖/🙋)
+## 首次部署 / 换机器（一次性，A 机已做完）
+
+1. clone 到纯 ASCII 路径，或建 `~/deploy-links/<名>` 软链；`docker network create vend-edge`（compose 声明为 external）。
+2. `cp .env.prod.example .env && chmod 600 .env`。`DB_PASSWORD` / SSO 四项 / `VEND_AUTH_SECRET` 由负责人自己填，AI 不经手明文。
+3. ops-monitoring `deploy/systems.tsv` 加一行（name / label / project / workdir / files / repos / port / domain），`ops deploy vend` 跑首轮；Flyway 首启自动建表。
+4. Cloudflare Tunnel `~/.cloudflared/config.yml` 加 `vend.vvaix.com → http://localhost:8089` ingress，重启 cloudflared。
+5. 门户管理后台注册子系统（回调 `https://vend.vvaix.com/api/v1/sso/callback`），拿到 app_id / client_secret 填 `.env`，`SSO_ENABLED=true`，`ops deploy vend --recreate` 重建 vend-server。验收：门户卡片点进来自动落 `/dashboard`，`/api/auth/me` 200 无 401。
+6. 首登口径：按 `portal_uid` 找账号，找不到自动建号（最低角色 `REGISTER_DEFAULT_ROLE`；账号表为空才给「老板」）。提权改 `yc_vend_auth_user.role` 后重新登录生效。
+
+## 本地开发（开发机，不是服务器）
+
+后端默认连 `127.0.0.1:3308/vend_dev`，那是 `vending-erp/docker-compose.yml` 起的开发库容器 `vend-mysql`（只绑回环口，口令见该文件）：
+
 ```bash
-ln -sf /data/apps/vend/deploy/caddy-site.conf /data/caddy/sites.d/vend.conf
-docker exec central-caddy caddy reload --config /etc/caddy/Caddyfile   # 或平台约定的 reload 方式
+cd vending-erp && docker compose up -d               # 第一次；之后机器重启若容器没自己起来：docker start vend-mysql
+cd backend && mvn -s settings.xml spring-boot:run    # 8081
+cd frontend && pnpm dev                              # Vite，/api 代理到 8081（VITE_PROXY_TARGET 可改）
 ```
 
-### 第 4 步 · 验收(🤖 我可远程真测)
-- 备案前:`curl http://121.40.120.226:8085/api/v1/health` → `{"code":200,...}`;浏览器开 `http://121.40.120.226:8085/`
-- 备案后:`https://vend.aoleplat.com` 走 V0-V5 真测(健康/登录壳/关键页/SQL 对账)
-- SQL 验证:`vend_prod` 40 表齐、flyway 1.0.17 success
-
-### 第 4.5 步 · 接平台门户 SSO(2026-08-19 · eco.vvaix.com 免登直达,可选)
-1. 门户管理后台注册子系统:名称「智慧园区售卖机 ERP」、系统 URL `https://vend.vvaix.com`、**回调地址 `https://vend.vvaix.com/api/v1/sso/callback`**、ssoEnabled=1 → 拿到 `app_id` / `client_secret`(记密码管理器,不入仓不进对话)
-2. `.env` 填:`SSO_ENABLED=true`、`SSO_PORTAL_BASE_URL=http://host.docker.internal:18151/api`(容器内访问宿主门户)、`SSO_APP_ID`、`SSO_CLIENT_SECRET`、`SSO_PORTAL_JWT_ISSUER=aole-portal,yunshan-portal`、**`SSO_ALLOWED_TENANT_IDS=T000004`(租户白名单,空=拒绝所有)**;`docker compose ... up -d` 重建 vend-server
-3. Flyway 首启自动补 `V1.0.100`(`yc_vend_auth_user.portal_uid` + 唯一索引,幂等可重跑)
-4. 验收 **路径 A**:开 `https://vend.vvaix.com/login` → 点「用平台账号登录」→ 跳 eco.vvaix.com;**路径 B**:门户工作台点本系统卡片 → `/api/v1/sso/callback?auth_code=..` → 302 `/sso/callback#token=..` → 自动落 `/dashboard`,右上角显示门户姓名;网络面板 `/api/auth/me` 200 无 401
-5. 首登口径:按 `portal_uid` 找账号,找不到自动建号(用户名=手机号/`portal_<uid>`,姓名=门户姓名,角色=`REGISTER_DEFAULT_ROLE` 最低角色;仅当账号表为空才给「老板」)。要提权到老板/财务:目前没有改角色的界面,由负责人在库里改 `yc_vend_auth_user.role`(改完重新登录生效)
-
-### 第 5 步 · 期初数据(🙋 决策 + 🤖 执行)
-生产库是空的。上线要不要把老 Excel 历史数据用「期初导入向导」灌进去?还是从当天空账起步?——这是业务决策。
-
-## 我做不了、必须你做的(再强调)
-
-| 事项 | 为什么 |
-|---|---|
-| 登录阿里云控制台加 DNS / 查备案 / 任何控制台操作 | 我不代输账号密码登录(红线);且无 AccessKey 走 CLI |
-| 买新 ECS / 新域名 / RDS 扩容 | 花钱操作,不代下单付款 |
-| 工信部备案 | 实名 + 10-20 工作日政府流程 |
-| 填 .env 里的真实密码 | 不经手明文密码 |
-
-## 我强烈建议先做的
-
-1. **先验收 + 合 main**:项目现在在 `dev/m4-bi` 分支、未验收。往共享生产机上线未验收代码有风险——建议先本地过一遍、merge,再上线。
-2. **轮换泄露密钥**:`API Key.md` 里明文躺着有效的 Anthropic / Kimi key,尽快作废重发。
-3. **别和图南抢资源**:4C8G 共享机再挂一套 Spring Boot + nginx,注意内存;必要时给 JVM 限 `-Xmx512m`。
+**顺序固定：先库、再后端、再前端。** 库没起来后端起不来（连不上 3308），前端起了也全是 502。
+这只是开发机的事，与线上无关：A 机三个容器 `restart: unless-stopped` + Docker Desktop 开机自启，服务器重启后自己回来。

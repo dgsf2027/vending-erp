@@ -1,7 +1,8 @@
-# 售卖机 ERP 生产编排(ole 平台 · /data/apps/vend/)· 自带 MySQL 版
+# 售卖机 ERP 生产编排(A 机 · ~/deploy-links/vending-erp/deploy · 合 main 即自动部署,见 README-上线runbook.md)· 自带 MySQL 版
 # 自成一套(mysql + 后端 + 前端),数据物理隔离;不依赖共享 RDS。
 # 敏感值全从 .env 注入(chmod 600,不进 Git)。
-# 前端经外部网络 vend-edge 由中央 central-caddy 反代(reverse_proxy vend-web:80)。
+# A 机:叠加 docker-compose.local.yml 把 vend-web 开到宿主 8089,Cloudflare Tunnel 反代到 vend.vvaix.com;
+# vend-edge 外部网络是 ECS 时代给 central-caddy 用的,保留声明(A 机上已建),无害。
 services:
   vend-mysql:
     image: mysql:8.0
@@ -66,7 +67,8 @@ services:
       context: ..
       dockerfile: deploy/frontend.Dockerfile
       args:
-        # 页面版本水印(侧栏底部):build 前 export GIT_SHA/GIT_DATE/GIT_BRANCH,见 runbook;不传显示 unknown
+        # 页面版本水印(侧栏底部):自动部署的 deploy.sh 构建时自动注入 GIT_SHA/GIT_DATE/GIT_BRANCH;
+        # 绕过 deploy.sh 手工 compose build 才需先 export(见 runbook),不传显示 unknown
         GIT_SHA: ${GIT_SHA:-unknown}
         GIT_DATE: ${GIT_DATE:-}
         GIT_BRANCH: ${GIT_BRANCH:-}
