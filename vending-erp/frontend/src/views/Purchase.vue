@@ -400,27 +400,69 @@ onMounted(() => {
       <span class="sub">在途=Σ(订购−已收);确认入库自动过账仓库账 + 回写订货单,结算付款链 M3 接上</span>
     </div>
     <p class="ledger-note">
-      ⚡ <b>任务来源</b>:拿货日(周一)由「AI 补货 → 采购建议」生成订货任务(M2 接入);现在也可手工下订货单,或用<b>无订单直接录入</b>兜底(现状小生意常态)。
+      进货到货了,点<b>「直接录入库」</b>录一张采购入库单,库存和加权成本随之更新。想先下单、到货再点数收货,用下面的<b>订货单</b>(可选)。
     </p>
 
     <!-- 编号流程条(设计七律#2) -->
     <div class="flow-strip">
-      <div class="flow-step on">① 下订货单<span class="mini">已下单=计入在途</span></div>
+      <div class="flow-step on">① 录入 / 下单<span class="mini">直接录入库,或先下订货单</span></div>
       <div class="flow-arrow">→</div>
       <div class="flow-step on">② 到货点数<span class="mini">应收/实收两列,差异标注</span></div>
       <div class="flow-arrow">→</div>
       <div class="flow-step on">③ 确认入库<span class="mini">自动过账库存+回写订单</span></div>
-      <div class="flow-arrow">→</div>
-      <div class="flow-step off">④ 结算付款<span class="mini">M3 开通(应付/凭证/核销)</span></div>
+    </div>
+
+    <!-- 入库单历史 -->
+    <div class="ledger-card">
+      <h3>
+        📥 采购入库单 <span class="hint">确认后库存 +、加权成本更新;确认过的单不可改,只能红冲</span>
+        <span style="margin-left: auto; display: flex; gap: 8px">
+          <el-button type="primary" size="small" @click="quickReceive">⚡ 直接录入库</el-button>
+        </span>
+      </h3>
+      <el-table :data="receipts" size="small">
+        <el-table-column label="单号" width="150">
+          <template #default="{ row }">
+            <a class="num name-link" @click="openDocDrawer(row.id)">{{ row.docNo }} ▸</a>
+          </template>
+        </el-table-column>
+        <el-table-column label="日期" width="100">
+          <template #default="{ row }"><span class="num">{{ row.bizDate }}</span></template>
+        </el-table-column>
+        <el-table-column label="供应商" min-width="100">
+          <template #default="{ row }">{{ row.supplierName || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="品项" width="60" align="right">
+          <template #default="{ row }"><span class="num">{{ row.itemCount }}</span></template>
+        </el-table-column>
+        <el-table-column label="数量" width="80" align="right">
+          <template #default="{ row }"><span class="num">{{ Number(row.totalQty) }}</span></template>
+        </el-table-column>
+        <el-table-column label="金额" width="100" align="right">
+          <template #default="{ row }"><span class="num">¥{{ Number(row.totalAmount).toFixed(2) }}</span></template>
+        </el-table-column>
+        <el-table-column label="状态" width="180">
+          <template #default="{ row }">
+            <span class="chip" :class="docStatusChip(row.docStatus)">{{ row.docStatus }}</span>
+            <span v-if="row.diffCount > 0" class="chip c-amber" style="margin-left: 4px">实收差异 {{ row.diffCount }} 行</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="180">
+          <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="openReceiptDetail(row)">详情</el-button>
+            <el-button v-if="row.docStatus === '草稿'" link type="success" size="small" @click="resumeReceive(row)">继续录入</el-button>
+            <el-button v-if="['草稿', '待确认'].includes(row.docStatus)" link type="success" size="small" @click="confirmFromList(row)">确认入库</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
     </div>
 
     <!-- 订货单列表 -->
     <div class="ledger-card">
       <h3>
-        📋 订货单 <span class="hint">超期未到黄灯;在途数是 M2 补货公式的输入</span>
+        📋 订货单(可选)<span class="hint">先下单、到货再点数收货时用;超期未到亮黄灯</span>
         <span style="margin-left: auto; display: flex; gap: 8px">
-          <el-button size="small" @click="quickReceive">⚡ 无订单直接录入库</el-button>
-          <el-button type="primary" size="small" @click="openPoForm">＋ 新建订货单</el-button>
+          <el-button size="small" @click="openPoForm">＋ 新建订货单</el-button>
         </span>
       </h3>
       <div style="margin-bottom: 10px; display: flex; gap: 6px">
@@ -480,57 +522,16 @@ onMounted(() => {
         layout="prev, pager, next, total" style="margin-top: 10px; justify-content: flex-end"
         @current-change="loadOrders"
       />
-    </div>
-
-    <!-- 在途汇总 -->
-    <div class="ledger-card">
-      <h3>🚚 在途库存 <span class="hint">在途 = Σ(订购 − 已收),只算「已下单/部分到货」的订货单;M2 补货公式从这取数</span></h3>
+          <div class="mini" style="margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line)">
+        🚚 <b>在途</b>(已下单未收到的货 = Σ订购 − 已收):
       <template v-if="inTransitRows.length">
         <span v-for="row in inTransitRows" :key="row.productId" class="chip c-blue" style="margin: 0 8px 6px 0; font-size: 12px">
           {{ row.productName || row.productId }} <b class="num">×{{ Number(row.inTransitQty) }}</b>
         </span>
       </template>
       <span v-else class="mini">当前无在途货(没有等着到货的订货单)</span>
-    </div>
+      </div>
 
-    <!-- 入库单历史 -->
-    <div class="ledger-card">
-      <h3>📥 采购入库单 <span class="hint">收货单→入库单 = 一张单两个状态;确认后不可改,只能红冲</span></h3>
-      <el-table :data="receipts" size="small">
-        <el-table-column label="单号" width="150">
-          <template #default="{ row }">
-            <a class="num name-link" @click="openDocDrawer(row.id)">{{ row.docNo }} ▸</a>
-          </template>
-        </el-table-column>
-        <el-table-column label="日期" width="100">
-          <template #default="{ row }"><span class="num">{{ row.bizDate }}</span></template>
-        </el-table-column>
-        <el-table-column label="供应商" min-width="100">
-          <template #default="{ row }">{{ row.supplierName || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="品项" width="60" align="right">
-          <template #default="{ row }"><span class="num">{{ row.itemCount }}</span></template>
-        </el-table-column>
-        <el-table-column label="数量" width="80" align="right">
-          <template #default="{ row }"><span class="num">{{ Number(row.totalQty) }}</span></template>
-        </el-table-column>
-        <el-table-column label="金额" width="100" align="right">
-          <template #default="{ row }"><span class="num">¥{{ Number(row.totalAmount).toFixed(2) }}</span></template>
-        </el-table-column>
-        <el-table-column label="状态" width="180">
-          <template #default="{ row }">
-            <span class="chip" :class="docStatusChip(row.docStatus)">{{ row.docStatus }}</span>
-            <span v-if="row.diffCount > 0" class="chip c-amber" style="margin-left: 4px">实收差异 {{ row.diffCount }} 行</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="180">
-          <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="openReceiptDetail(row)">详情</el-button>
-            <el-button v-if="row.docStatus === '草稿'" link type="success" size="small" @click="resumeReceive(row)">继续录入</el-button>
-            <el-button v-if="['草稿', '待确认'].includes(row.docStatus)" link type="success" size="small" @click="confirmFromList(row)">确认入库</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
     </div>
 
     <p class="ledger-foot-note">— 采购价历史自动从入库单聚合成「价格本」,录单时同品比价、涨幅超 20% 亮黄灯 —</p>

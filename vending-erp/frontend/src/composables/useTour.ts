@@ -26,24 +26,29 @@ const STEPS: TourStep[] = [
     desc: '每天第一眼看这里:卖得怎么样、钱赚了多少、有没有红灯要处理,一屏看清。',
   },
   {
-    target: '[data-tour="import"]',
-    title: '📥 导入中心(每天必做)',
-    desc: '每天早上把后台(fanmaiji.top)导出的 Excel 拖进来,系统自动记销售账、生成转移单。不用手敲数字。',
-  },
-  {
-    target: '[data-tour="outbound"]',
-    title: '🚚 出库上架 · 配货',
-    desc: '看 AI 补货建议 → 生成配货单去补货;次日补货记录导入会自动核销,差量算带回率。',
-  },
-  {
     target: '[data-tour="purchase"]',
     title: '🚛 采购入库(唯一手工单)',
-    desc: '进货到货了,在这里录一张采购入库单。日常只有这一种单要手工录,其余全靠导入。',
+    desc: '进货到货了,在这里录一张采购入库单。日常只有这一种单要手工录,销售全靠导入。',
   },
   {
-    target: '[data-tour="money"]',
-    title: '💰 资金与对账',
-    desc: '每一笔钱都有流水可追;供应商欠款、账户余额都在钱账区实时算。',
+    target: '[data-tour="import"]',
+    title: '📥 导入中心(每天必做)',
+    desc: '把售卖机后台(fanmaiji.top)导出的出货明细 Excel 拖进来,系统自动记销售账。不用手敲数字。',
+  },
+  {
+    target: '[data-tour="inventory"]',
+    title: '📦 库存管理',
+    desc: '每个商品还剩多少、值多少钱:库存 = 期初 + 入库 − 销售 − 损耗;负库存、库存不足一眼看到。',
+  },
+  {
+    target: '[data-tour="stocktake"]',
+    title: '📋 盘点',
+    desc: '月末盘一次:账面数自动带出,只填对不上的,确认后自动生成盘盈亏单。',
+  },
+  {
+    target: '[data-tour="reports"]',
+    title: '📈 报表',
+    desc: '毛利报表(按商品 / 按机器)和进销存汇总;月份选「累计」看期初至今全量,就是旧版台账那张表。',
   },
   {
     target: '[data-tour="guide"]',

@@ -23,51 +23,74 @@ const router = useRouter()
 const menuOpen = ref(false)
 watch(() => route.path, () => { menuOpen.value = false })
 
-const groups: { label?: string; items: { path?: string; ico: string; title: string; milestone?: string }[] }[] = [
+/**
+ * 导航(2026-09 精简版):围绕老板每天的活——进货、导销售、看库存、盘点、看报表。
+ * 钱账 / 补货 / 任务 / BI / PDCA 等未启用模块收进底部「更多功能」,页面和接口都还在,随时可点开。
+ */
+const groups: { label?: string; collapsible?: boolean; items: { path?: string; ico: string; title: string; milestone?: string }[] }[] = [
   {
-    items: [
-      { path: '/dashboard', ico: '🏠', title: '经营驾驶舱' },
-      { path: '/tasks', ico: '📅', title: '任务日历' },
-      { path: '/replenish', ico: '🤖', title: 'AI 补货提示' },
-    ],
+    items: [{ path: '/dashboard', ico: '🏠', title: '经营驾驶舱' }],
   },
   {
     label: '日常台账',
     items: [
-      { path: '/import', ico: '📥', title: '导入中心' },
-      { path: '/outbound', ico: '🚚', title: '出库上架' },
       { path: '/purchase', ico: '🚛', title: '采购入库' },
+      { path: '/import', ico: '📥', title: '导入中心' },
       { path: '/inventory', ico: '📦', title: '库存管理' },
       { path: '/stocktake', ico: '📋', title: '盘点' },
     ],
   },
   {
-    label: '钱账',
+    label: '报表',
     items: [
-      { path: '/money', ico: '💰', title: '资金与对账' },
-      { path: '/suppliers', ico: '🏭', title: '供应商往来' },
-      { path: '/assets', ico: '🏦', title: '资产家底' },
+      { path: '/reports', ico: '📈', title: '报表' },
+      { path: '/products', ico: '🧃', title: '商品 · 单品分析' },
     ],
   },
   {
-    label: 'BI 经营分析',
+    label: '系统',
     items: [
+      { path: '/settings', ico: '⚙️', title: '设置中心' },
+      { path: '/guide', ico: '🧭', title: '新手指引' },
+    ],
+  },
+  {
+    label: '更多功能(未启用)',
+    collapsible: true,
+    items: [
+      { path: '/replenish', ico: '🤖', title: 'AI 补货提示' },
+      { path: '/outbound', ico: '🚚', title: '出库上架' },
+      { path: '/tasks', ico: '📅', title: '任务日历' },
+      { path: '/money', ico: '💰', title: '资金与对账' },
+      { path: '/suppliers', ico: '🏭', title: '供应商往来' },
+      { path: '/assets', ico: '🏦', title: '资产家底' },
       { path: '/bi', ico: '📊', title: 'BI 经营分析' },
-      { path: '/reports', ico: '📈', title: '报表' },
-      { path: '/products', ico: '🧃', title: '商品 · 单品分析' },
       { path: '/monthly-report', ico: '🗓️', title: '月度报表' },
       { path: '/pdca', ico: '🔄', title: '改进循环 PDCA' },
     ],
   },
-  {
-    label: '帮助',
-    items: [{ path: '/guide', ico: '🧭', title: '新手指引' }],
-  },
-  {
-    label: '系统',
-    items: [{ path: '/settings', ico: '⚙️', title: '设置中心' }],
-  },
 ]
+
+/** 「更多功能」默认收起;当前正在看其中某页时自动展开;开合状态记本机 */
+const MORE_KEY = 'vend_nav_more'
+const morePaths = groups.filter((g) => g.collapsible).flatMap((g) => g.items.map((i) => i.path))
+const moreOpen = ref(false)
+try {
+  moreOpen.value = localStorage.getItem(MORE_KEY) === '1'
+} catch {
+  moreOpen.value = false
+}
+watch(() => route.path, (p) => {
+  if (morePaths.some((mp) => mp && p.startsWith(mp))) moreOpen.value = true
+}, { immediate: true })
+const toggleMore = () => {
+  moreOpen.value = !moreOpen.value
+  try {
+    localStorage.setItem(MORE_KEY, moreOpen.value ? '1' : '0')
+  } catch {
+    /* 隐私模式忽略 */
+  }
+}
 
 const isActive = (path?: string) =>
   !!path && (route.path === path || route.path.startsWith(path + '/')
@@ -107,17 +130,22 @@ const openGuide = () => router.push('/guide')
       </div>
       <nav class="nav">
         <template v-for="(g, gi) in groups" :key="gi">
-          <div v-if="g.label" class="grp">{{ g.label }}</div>
-          <a
-            v-for="it in g.items"
-            :key="it.title"
-            :data-tour="it.path ? it.path.slice(1) : undefined"
-            :class="{ on: isActive(it.path), dim: !it.path }"
-            @click="it.path && router.push(it.path)"
-          >
-            <span class="ico">{{ it.ico }}</span>{{ it.title }}
-            <span v-if="it.milestone" class="ms">{{ it.milestone }}</span>
-          </a>
+          <div v-if="g.collapsible" class="grp grp-toggle" @click="toggleMore">
+            {{ g.label }} <span class="caret">{{ moreOpen ? '▾' : '▸' }}</span>
+          </div>
+          <div v-else-if="g.label" class="grp">{{ g.label }}</div>
+          <template v-if="!g.collapsible || moreOpen">
+            <a
+              v-for="it in g.items"
+              :key="it.title"
+              :data-tour="it.path ? it.path.slice(1) : undefined"
+              :class="{ on: isActive(it.path), dim: !it.path, minor: g.collapsible }"
+              @click="it.path && router.push(it.path)"
+            >
+              <span class="ico">{{ it.ico }}</span>{{ it.title }}
+              <span v-if="it.milestone" class="ms">{{ it.milestone }}</span>
+            </a>
+          </template>
         </template>
       </nav>
       <div class="side-foot">
@@ -254,6 +282,22 @@ body {
   color: #7f987f;
   letter-spacing: 3px;
   padding: 16px 14px 6px;
+}
+.sidebar .nav .grp-toggle {
+  cursor: pointer;
+  user-select: none;
+  border-top: 1px dashed rgba(255, 255, 255, 0.12);
+  margin-top: 8px;
+}
+.sidebar .nav .grp-toggle:hover {
+  color: #c3d4c8;
+}
+.sidebar .nav .grp-toggle .caret {
+  letter-spacing: 0;
+  margin-left: 2px;
+}
+.sidebar .nav a.minor {
+  opacity: 0.72;
 }
 .side-foot {
   padding: 14px 16px;
