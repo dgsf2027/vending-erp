@@ -3,6 +3,10 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import DocDetailDrawer from '@/components/doc/DocDetailDrawer.vue'
+import CashCheckPanel from '@/components/money/CashCheckPanel.vue'
+import ClaimPanel from '@/components/money/ClaimPanel.vue'
+import { CLAIMABLE_REASONS } from '@/api/claim'
+import { pdcaApi, type ItemSaveReq, type ItemRow as PdcaItemRow } from '@/api/pdca'
 import { pageMachines, pageProducts, type Machine } from '@/api/basedata'
 import {
   ACCOUNT_ERROR_REASONS, DIFF_REASONS,
@@ -17,7 +21,7 @@ import {
 /**
  * 盘点页(M2-4 桌面版 + M2-5 手机版,对照 mockup p9):
  * ⚡任务来源+编号流程条 → 新建盘点(选范围,系统快照账面)→ 盘点表格(账面带出,
- * 只填差异,差异行高亮+原因必选)→ 提交 → 三步向导(1 系统查账 / 2 归因汇总 /
+ * 只填差异,差异行高亮+原因必选)→ 提交 → 五步向导(1 系统查账 / 2 归因汇总 /
  * 3 生成盘盈亏单[>¥50 红标老板确认] / 4-5 灰位标里程碑)→ 历史列表 + 损耗小结。
  *
  * M2-5 手机版(≤768px,铁律10):同一份数据两套 DOM——桌面表格不动,移动端换成
@@ -215,7 +219,7 @@ async function doSubmit() {
     saving.value = false
   }
   clearDraft(id)
-  ElMessage.success('已提交,进入处理向导——先看第 1 步系统查账')
+  ElMessage.success('已提交,进入五步向导——先看第 1 步系统查账')
   await loadList()
   await openDetail(id)
 }
@@ -411,6 +415,66 @@ async function doConfirm() {
   }
 }
 
+// ============================== 五步第 4 步:索赔入口(M3-4 点亮) ==============================
+
+/** 可索赔盘亏行:归因=吞货掉货/被盗 且确实盘亏(diff<0)(§9.3 场景4) */
+const claimableRows = computed(() =>
+  (detail.value?.items || []).filter(
+    (r) => Number(r.diffQty) < 0 && (CLAIMABLE_REASONS as readonly string[]).includes(r.diffReason || ''),
+  ))
+/** 索赔金额默认=盘亏成本额(Σ|diffAmount|;无成本史行按 0 计,弹窗内可改) */
+const claimPrefillAmount = computed(() =>
+  Number(claimableRows.value
+    .reduce((s, r) => s + Math.abs(Number(r.diffAmount ?? 0)), 0)
+    .toFixed(2)))
+const claimDialogVisible = ref(false)
+
+// ============================== 第 5 步:盘亏起草改进任务(M4-3 PDCA 点亮) ==============================
+
+const draftDialogVisible = ref(false)
+const draftLoading = ref(false)
+const draftRows = ref<ItemSaveReq[]>([])
+const existingItems = ref<PdcaItemRow[]>([])
+const savingDrafts = ref(false)
+
+async function openDraft() {
+  if (!detail.value) return
+  draftLoading.value = true
+  try {
+    const resp = await pdcaApi.draftFromStocktake(detail.value.id)
+    draftRows.value = resp.drafts
+    existingItems.value = resp.existing
+    draftDialogVisible.value = true
+  } catch (e: any) {
+    ElMessage.error(e?.message || '起草失败')
+  } finally {
+    draftLoading.value = false
+  }
+}
+
+async function confirmDrafts() {
+  if (!draftRows.value.length) {
+    draftDialogVisible.value = false
+    return
+  }
+  savingDrafts.value = true
+  try {
+    for (const d of draftRows.value) {
+      await pdcaApi.create(d)
+    }
+    ElMessage.success(`已登记 ${draftRows.value.length} 条改进任务,验证日到期驾驶舱自动提醒回查`)
+    draftDialogVisible.value = false
+    // 刷新已挂任务(便于用户看到"已起草")
+    if (detail.value) {
+      existingItems.value = (await pdcaApi.draftFromStocktake(detail.value.id)).existing
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message || '登记失败')
+  } finally {
+    savingDrafts.value = false
+  }
+}
+
 // ============================== 单据抽屉(七律#3:单号可点) ==============================
 
 const docDrawerVisible = ref(false)
@@ -420,6 +484,16 @@ function openDoc(docId?: number | null) {
   docDrawerId.value = docId
   docDrawerVisible.value = true
 }
+
+// ============================== 月度财务盘点 SOP(mockup p9;D2 钱盘 M3-5 点亮,C/A 灰位) ==============================
+
+const sopRows = [
+  { step: 'P 准备', when: '前一天', who: '系统', what: '自动生成任务包:仓库盘点 ×1 + 资金核对 + 应付核对', support: '账面数自动快照(任务日历派单)', milestone: '' },
+  { step: 'D1 货盘', when: '上午', who: '补货员', what: '仓库大盘(机器不重复盘——已由每周轮盘覆盖,只汇总本月轮盘结果)', support: '手机录入,只填差异行', milestone: '' },
+  { step: 'D2 钱盘', when: '上午', who: '老板', what: '核微信/现金实际余额 · 核平台上月到账 · 发对账单给供应商确认', support: '↓ 下方钱盘三核对面板,填实际数', milestone: '' },
+  { step: 'C 检查', when: '下午', who: '系统+老板', what: '自动出《月度盘点报告》:货差/钱差/资产快照/环比', support: '差异超阈值红灯 · 报告归档', milestone: '里程碑 3' },
+  { step: 'A 改进', when: '下午', who: '老板', what: '对着报告定改进任务(淘汰/调参/索赔),AI 起草建议', support: '任务带验证指标,下月自动回查', milestone: '里程碑 4' },
+]
 
 // ============================== 损耗小结 ==============================
 
@@ -466,14 +540,14 @@ onUnmounted(() => {
     <div class="ledger-crumb">园区小卖 ERP / 日常台账 / 盘点</div>
     <div class="ledger-title">
       <h2>盘点</h2>
-      <span class="sub">建单快照账面 → 只录差异 → 查账归因 → 生成盘盈亏单,少货查到底</span>
+      <span class="sub">任务系统自动生成 · 流程一步步领着走 · 少货按五步查到底</span>
     </div>
 
     <!-- ⚡ 任务来源 + 编号流程条(设计思维律②:领着人干活) -->
     <el-alert type="info" :closable="false" class="mb-12px">
       <template #title>
-        节奏:每周补货顺手盘机器 + 每月 1 日仓库大盘 ·
-        流程:<b>① 建单快照账面 → ② 现场实盘只录差异 → ③ 提交 → ④ 查账归因 → ⑤ 确认生成盘盈亏单</b>
+        ⚡ 任务来源:每周轮盘(补货顺手盘)+ 每月 1 日仓库大盘(月度 SOP 任务包,任务日历 M2-6/里程碑4 自动派)·
+        流程:<b>① 建单快照账面 → ② 现场实盘只录差异 → ③ 提交 → ④ 五步向导归因处理 → ⑤ 改进+下轮验证</b>
       </template>
     </el-alert>
 
@@ -482,13 +556,13 @@ onUnmounted(() => {
       <div :class="['flow-step', !detail ? 'cur' : 'done']">① 系统生成盘点单<span class="mini">选范围·账面数快照</span></div>
       <div :class="['flow-step', detail && editable ? 'cur' : detail ? 'done' : '']">② 现场录实盘<span class="mini">账面带出,只填对不上的</span></div>
       <div :class="['flow-step', detail?.stStatus === '待确认' ? 'cur' : detail?.stStatus === '已完成' ? 'done' : '']">③ 提交差异<span class="mini">差异行必选原因</span></div>
-      <div :class="['flow-step', detail?.stStatus === '待确认' ? 'cur' : detail?.stStatus === '已完成' ? 'done' : '']">④ 查账归因<span class="mini">是不是账错了?为什么少?</span></div>
-      <div :class="['flow-step', detail?.stStatus === '已完成' ? 'done' : '']">⑤ 确认过账<span class="mini">生成盘盈亏单,库存修正</span></div>
+      <div :class="['flow-step', detail?.stStatus === '待确认' ? 'cur' : detail?.stStatus === '已完成' ? 'done' : '']">④ 五步向导<span class="mini">查账→归因→生成盘盈亏单</span></div>
+      <div class="flow-step dim">⑤ 改进+下轮验证<span class="mini">PDCA 自动回查(里程碑4)</span></div>
     </div>
 
     <!-- 新建盘点 -->
     <div class="ledger-card" data-block="create">
-      <h3>🆕 新建盘点 <span class="hint">选范围 → 系统自动快照账面数(仓库=台账期末结存,机器=推算值)</span></h3>
+      <h3>🆕 新建盘点 <span class="hint">选范围 → 系统自动快照账面数(仓库=Σ流水,机器=推算值)</span></h3>
       <div class="flex items-center gap-12px flex-wrap">
         <el-radio-group v-model="createForm.scopeType">
           <el-radio-button value="仓库">🏬 仓库盘点</el-radio-button>
@@ -673,7 +747,7 @@ onUnmounted(() => {
           提交盘点({{ diffRows.length }} 行差异,其余视同相符)
         </el-button>
         <el-button type="danger" plain @click="doCancel">作废</el-button>
-        <span class="mini">提交后进入处理向导:先由系统查账,再归因,再生成盘盈亏单</span>
+        <span class="mini">提交后进入五步向导:先由系统查账,再归因,再生成盘盈亏单</span>
       </div>
       </div><!-- /.st-desktop -->
 
@@ -685,9 +759,9 @@ onUnmounted(() => {
         </button>
       </div>
 
-      <!-- 处理向导(三步:查账 → 归因 → 生成盘盈亏单) -->
+      <!-- 五步向导(mockup p9 五连横条;M2 开放 1-3 步,4/5 灰位) -->
       <div v-if="detail.stStatus !== '进行中'" class="wizard" data-block="wizard">
-        <h3 style="margin-top: 18px">🧭 盘亏处理三步向导
+        <h3 style="margin-top: 18px">🧭 盘亏处理五步向导
           <span class="hint">先查账,再定责,后改进——不是一句"报损"就完了(调研报告 §8.1)</span>
         </h3>
         <div class="wizard-bar">
@@ -716,6 +790,7 @@ onUnmounted(() => {
                 {{ s.count }} 行 / {{ s.qty }} 件
               </div>
               <div v-if="!reasonSummary.length" class="mini">无差异行,账实全符 ✓</div>
+              <div class="mini" style="margin-top: 4px">吞货可联查该货道出货失败记录:里程碑3开放</div>
             </div>
           </div>
           <!-- 第3步 · 处理 -->
@@ -744,6 +819,34 @@ onUnmounted(() => {
                 </div>
                 <div class="mini">已过账,库存已修正 ✓</div>
               </template>
+            </div>
+          </div>
+          <!-- 第4步 · 改进 + 索赔入口(索赔 M3-4 点亮;改进任务仍里程碑 4) -->
+          <div class="wz-step" :class="claimableRows.length ? 'wz-active' : 'wz-dim'">
+            <div class="wz-no">第 4 步 · 改进/索赔{{ claimableRows.length ? ' ← 可索赔' : '' }}</div>
+            <div class="wz-title">吞货/被盗 → 找厂家或平台要钱</div>
+            <div class="wz-body mini">
+              <template v-if="claimableRows.length">
+                <div>{{ claimableRows.length }} 行归因可索赔(吞货掉货/被盗),盘亏成本额 ¥{{ claimPrefillAmount.toFixed(2) }}</div>
+                <el-button type="warning" size="small" style="margin-top: 4px" @click="claimDialogVisible = true">
+                  🧾 发起索赔(挂索赔应收)
+                </el-button>
+              </template>
+              <template v-else>吞货/被盗归因行才可索赔;改进任务:吞货多→报修货道 · 过期多→降机内上限<br /><span class="chip c-gray">改进任务 里程碑 4 开放</span></template>
+            </div>
+          </div>
+          <!-- 第5步 · 改进+下轮验证(M4-3 PDCA 点亮) -->
+          <div class="wz-step" :class="detail.stStatus === '已完成' ? 'wz-active' : 'wz-dim'">
+            <div class="wz-no">第 5 步 · 改进 + 下轮验证{{ detail.stStatus === '已完成' ? ' ← 可起草' : '' }}</div>
+            <div class="wz-title">吞货/过期/被盗 → 一键起草改进任务</div>
+            <div class="wz-body mini">
+              <template v-if="detail.stStatus === '已完成'">
+                <div>按有改进空间的原因起草改进任务(吞货多→报修货道·过期多→降机内上限);验证指标=该原因损耗额,验证日=下次月盘,到期系统自动回查。</div>
+                <el-button type="primary" size="small" :loading="draftLoading" style="margin-top: 4px" @click="openDraft">
+                  🔄 一键起草改进任务(去 PDCA)
+                </el-button>
+              </template>
+              <template v-else>盘点确认过账后开放:该原因损耗环比↓?达标关闭·不达标升级<br /><span class="chip c-gray">先完成第 3 步确认</span>·索赔挂应收:<span class="chip c-green">已开放(第 4 步)</span></template>
             </div>
           </div>
         </div>
@@ -824,10 +927,101 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <p class="ledger-foot-note">— 旧版《月末盘点表》的账面结存、实盘、差异、差异金额都在这里,多了归因与自动生成盘盈亏单 —</p>
+    <!-- 📅 月度财务盘点 SOP(mockup p9:货和钱一起盘;钱盘/报告/改进属里程碑3/4,画灰位) -->
+    <div class="ledger-card" data-block="monthly-sop">
+      <h3>📅 月度财务盘点 SOP <span class="hint">每月 1 日 · 半天 · 货和钱一起盘(任务包由任务日历自动生成)</span></h3>
+      <el-table :data="sopRows" size="small">
+        <el-table-column label="环节" width="110">
+          <template #default="{ row }">
+            <b>{{ row.step }}</b><div class="mini">{{ row.when }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column prop="who" label="谁" width="90" />
+        <el-table-column prop="what" label="干什么" min-width="230" />
+        <el-table-column label="系统支持" min-width="150">
+          <template #default="{ row }"><span class="mini">{{ row.support }}</span></template>
+        </el-table-column>
+        <el-table-column label="状态" width="130" fixed="right">
+          <template #default="{ row }">
+            <span class="chip" :class="row.milestone ? 'c-gray' : 'c-green'">
+              {{ row.milestone ? row.milestone + ' 开放' : '本期已可用' }}
+            </span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <p class="mini" style="margin-top: 8px">
+        💡 机器不重复盘——已由每周轮盘覆盖,月盘只做<b>仓库大盘</b> + 汇总本月轮盘结果;D2 钱盘已点亮(下方三核对面板),《月度盘点报告》与 PDCA 随里程碑逐月点亮。
+      </p>
+    </div>
+
+    <!-- 💰 D2 钱盘三核对(M3-5 点亮:账户/平台到账/应付;差异出口=资金调整单/补录/红冲) -->
+    <div class="ledger-card" data-block="cash-check">
+      <h3>💰 钱盘三核对(月度 SOP · D2)
+        <span class="hint">每分钱的差异都要有出口:账户差→资金调整单 · 应付差→补录或红冲</span>
+      </h3>
+      <CashCheckPanel />
+    </div>
+
+    <p class="ledger-foot-note">— 老台账的《月末盘点表》从"建好了没填过"变成固定节奏:补货顺手盘 + 每月 1 日半天大盘 —</p>
 
     <DocDetailDrawer v-model="docDrawerVisible" :doc-id="docDrawerId" />
 
+    <!-- 五步第 4 步:索赔面板(M3-4;盘亏行预填,金额=盘亏成本额) -->
+    <el-dialog v-model="claimDialogVisible" title="🧾 索赔(盘亏 → 找厂家/平台要钱)" width="860px" append-to-body>
+      <ClaimPanel
+        v-if="claimDialogVisible && detail"
+        :prefill-source-id="detail.id"
+        :prefill-item-ids="claimableRows.map((r) => r.id)"
+        :prefill-amount="claimPrefillAmount"
+        :auto-open-create="true"
+        @created="openDetail(detail.id)"
+      />
+    </el-dialog>
+
+    <!-- 五步第 5 步:盘亏起草改进任务(M4-3 PDCA;预填不落库,老板确认后才登记) -->
+    <el-dialog v-model="draftDialogVisible" title="🔄 起草改进任务(盘亏 → 下轮验证)" width="720px" append-to-body>
+      <p class="mini" style="margin-bottom: 10px">
+        按"有改进空间"的原因(吞货/过期/被盗)各起草一条改进任务;账错类(录入/盘点错误)不起草。
+        验证指标=该原因当月损耗额,目标=本次损耗减半(≥¥10),验证日=下次月盘,到期系统自动回查。
+      </p>
+      <div v-if="existingItems.length" class="mini" style="margin-bottom: 8px; color: var(--amber)">
+        ⚠️ 该盘点单已挂 {{ existingItems.length }} 条改进任务(防重复起草):
+        <span v-for="e in existingItems" :key="e.id" class="chip c-amber" style="margin-left: 4px">
+          #{{ e.id }} {{ e.metricParam }} {{ e.itemStatus }}
+        </span>
+      </div>
+      <el-table v-if="draftRows.length" :data="draftRows" size="small">
+        <el-table-column label="来源" width="64">
+          <template #default><span class="chip c-blue">盘点</span></template>
+        </el-table-column>
+        <el-table-column label="问题 → 措施" min-width="280">
+          <template #default="{ row }">
+            <div class="mini">{{ row.problemDesc }}</div>
+            <div class="mini">→ {{ row.measure }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="验证指标" min-width="150">
+          <template #default="{ row }"><span class="mini">{{ row.verifyMetric }}</span></template>
+        </el-table-column>
+        <el-table-column label="验证日" width="100">
+          <template #default="{ row }"><span class="num">{{ row.verifyDate }}</span></template>
+        </el-table-column>
+      </el-table>
+      <div v-else class="mini" style="padding: 12px 0; text-align: center; color: var(--ink2)">
+        本次盘点无"有改进空间"的盘亏原因(吞货/过期/被盗),无需起草改进任务 ✓
+      </div>
+      <template #footer>
+        <el-button @click="draftDialogVisible = false">关闭</el-button>
+        <el-button
+          v-if="draftRows.length"
+          type="primary"
+          :loading="savingDrafts"
+          @click="confirmDrafts"
+        >
+          确认登记 {{ draftRows.length }} 条改进任务
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
