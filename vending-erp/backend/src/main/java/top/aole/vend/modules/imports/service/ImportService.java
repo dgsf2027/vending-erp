@@ -802,8 +802,34 @@ public class ImportService {
     public Page<ImportBatch> pageBatches(long current, long size, String fileType) {
         return batchMapper.selectPage(new Page<>(current, size),
                 new LambdaQueryWrapper<ImportBatch>()
+                        .eq(ImportBatch::getStatus, ImportBatch.HISTORY_VISIBLE)
                         .eq(StrUtil.isNotBlank(fileType), ImportBatch::getFileType, fileType)
                         .orderByDesc(ImportBatch::getId));
+    }
+
+    /**
+     * 仅删除历史展示,不撤销导入数据。不能使用全局逻辑删除:期初防重、任务完成校验仍需来源批次。
+     * 原始文件、错误记录、业务关联和 batch_status 保留,操作日志记录删除人及前后状态。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteBatch(Long batchId, String operator) {
+        ImportBatch batch = mustGetBatch(batchId);
+        if (ImportBatch.STATUS_PROCESSING.equals(batch.getBatchStatus())) {
+            throw new BizException("批次正在处理中,请等待导入完成后再删除历史");
+        }
+        if (Integer.valueOf(ImportBatch.HISTORY_HIDDEN).equals(batch.getStatus())) {
+            return;
+        }
+        int changed = batchMapper.update(null, new LambdaUpdateWrapper<ImportBatch>()
+                .eq(ImportBatch::getId, batchId)
+                .eq(ImportBatch::getStatus, ImportBatch.HISTORY_VISIBLE)
+                .ne(ImportBatch::getBatchStatus, ImportBatch.STATUS_PROCESSING)
+                .set(ImportBatch::getStatus, ImportBatch.HISTORY_HIDDEN)
+                .set(ImportBatch::getUpdateUser, IMPORT_USER));
+        if (changed > 0) {
+            opLogService.record(operator, "删除批次历史", "import_batch", batchId,
+                    batch, batchMapper.selectById(batchId));
+        }
     }
 
     public Page<ImportError> pageErrors(Long batchId, long current, long size) {
@@ -919,7 +945,11 @@ public class ImportService {
 
         batch.setBatchStatus(ImportBatch.STATUS_ROLLED_BACK);
         batch.setUpdateUser(IMPORT_USER);
-        batchMapper.updateById(batch);
+        // 只改回滚字段,避免把回滚前读取的 status 写回,恢复并发删除的历史记录。
+        batchMapper.update(null, new LambdaUpdateWrapper<ImportBatch>()
+                .eq(ImportBatch::getId, batchId)
+                .set(ImportBatch::getBatchStatus, ImportBatch.STATUS_ROLLED_BACK)
+                .set(ImportBatch::getUpdateUser, IMPORT_USER));
         opLogService.record(operator, "整批回滚", "import_batch", batchId, null, batch);
         resp.setSuccess(true);
         return resp;
