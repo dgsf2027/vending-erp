@@ -86,6 +86,14 @@ public class ImportController {
         return R.ok(importService.pageBatches(current, size, fileType));
     }
 
+    @ApiOperation("删除批次历史(保留已导入数据及来源记录)")
+    @DeleteMapping("/batches/{id}")
+    public R<Void> deleteBatch(@PathVariable Long id,
+                              @RequestHeader(value = Operators.HEADER, required = false) String userName) {
+        importService.deleteBatch(id, Operators.resolve(userName));
+        return R.ok();
+    }
+
     @ApiOperation("批次行级错误分页")
     @GetMapping("/batches/{id}/errors")
     public R<Page<ImportError>> errors(@PathVariable Long id,

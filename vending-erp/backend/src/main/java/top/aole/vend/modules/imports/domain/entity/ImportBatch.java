@@ -9,11 +9,15 @@ import top.aole.vend.modules.basedata.domain.entity.BaseEntity;
  * 导入批次(yc_vend_import_batch):导入中心是全系统数据入口。
  * 三通道 file_type = 出货明细 / 系统补货记录 / 商品列表(期初通道 M1-6 接)。
  * 原始文件归档 archive_path,整批可回滚(batch_status=已回滚)。
+ * 继承的 status 仅控制批次历史展示(1=展示,0=已删除历史);保留来源记录供业务追溯及期初进度判断。
  */
 @Data
 @EqualsAndHashCode(callSuper = true)
 @TableName("yc_vend_import_batch")
 public class ImportBatch extends BaseEntity {
+
+    public static final int HISTORY_VISIBLE = 1;
+    public static final int HISTORY_HIDDEN = 0;
 
     public static final String TYPE_SALE = "出货明细";
     public static final String TYPE_REPLENISH = "系统补货记录";

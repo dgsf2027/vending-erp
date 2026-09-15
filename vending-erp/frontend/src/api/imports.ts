@@ -262,6 +262,9 @@ export const importsApi = {
   batches(current = 1, size = 20, fileType?: string): Promise<PageResult<ImportBatch>> {
     return request.get('/v1/imports/batches', { params: { current, size, fileType } })
   },
+  deleteBatch(batchId: number): Promise<void> {
+    return request.delete(`/v1/imports/batches/${batchId}`, { headers: operatorHeader() })
+  },
   errors(batchId: number, current = 1, size = 50): Promise<PageResult<ImportError>> {
     return request.get(`/v1/imports/batches/${batchId}/errors`, { params: { current, size } })
   },

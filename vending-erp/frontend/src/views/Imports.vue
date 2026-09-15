@@ -20,6 +20,7 @@ import {
 } from '@/api/imports'
 import AliasPendingDrawer from '@/components/basedata/AliasPendingDrawer.vue'
 import LlmTransparencyBadge from '@/components/ai/LlmTransparencyBadge.vue'
+import { isMobile } from '@/utils/viewport'
 
 /**
  * 导入中心(M1-3):全系统数据入口。对照 mockup p5 导入部分。
@@ -152,15 +153,42 @@ const batches = ref<ImportBatch[]>([])
 const batchTotal = ref(0)
 const batchPage = ref(1)
 const batchLoading = ref(false)
+const deletingBatchId = ref<number | null>(null)
 
 async function loadBatches() {
   batchLoading.value = true
   try {
-    const page = await importsApi.batches(batchPage.value, 10)
+    let page = await importsApi.batches(batchPage.value, 10)
+    const lastPage = Math.max(1, Math.ceil(page.total / 10))
+    if (batchPage.value > lastPage) {
+      batchPage.value = lastPage
+      page = await importsApi.batches(lastPage, 10)
+    }
     batches.value = page.records
     batchTotal.value = page.total
   } finally {
     batchLoading.value = false
+  }
+}
+
+async function doDeleteBatch(row: ImportBatch) {
+  if (deletingBatchId.value !== null || row.batchStatus === '处理中') return
+  deletingBatchId.value = row.id
+  try {
+    await ElMessageBox.confirm(
+      `删除批次「${row.batchNo}」的历史记录？已导入的销售、库存和商品数据会保留。删除后将无法从历史列表操作该批次；如需撤销导入数据，请先取消并使用“回滚”。`,
+      '确认删除批次历史',
+      { type: 'warning', confirmButtonText: '删除历史', cancelButtonText: '取消' },
+    )
+    await importsApi.deleteBatch(row.id)
+    if (lastResult.value?.batchId === row.id) lastResult.value = null
+    ElMessage.success('批次历史已删除，已导入数据保留')
+    await loadBatches()
+  } catch (error) {
+    // 取消/关闭确认框无需提示;接口错误由统一请求拦截器展示。
+    if (error !== 'cancel' && error !== 'close') console.error('删除批次历史失败', error)
+  } finally {
+    deletingBatchId.value = null
   }
 }
 
@@ -506,7 +534,7 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
           </template>
         </el-table-column>
         <el-table-column prop="createTime" label="导入时间" width="150" />
-        <el-table-column label="操作" width="300">
+        <el-table-column label="操作" width="350" :fixed="isMobile ? false : 'right'">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openErrors(row)">错误明细</el-button>
             <el-button
@@ -536,6 +564,16 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
               @click="doRollback(row)"
             >
               回滚
+            </el-button>
+            <el-button
+              link
+              type="danger"
+              size="small"
+              :loading="deletingBatchId === row.id"
+              :disabled="row.batchStatus === '处理中' || deletingBatchId !== null"
+              @click="doDeleteBatch(row)"
+            >
+              删除
             </el-button>
           </template>
         </el-table-column>
