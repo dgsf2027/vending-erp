@@ -229,3 +229,26 @@ export function getPriceHistory(productId: number, supplierId?: number): Promise
 export function priceCheck(productId: number, supplierId?: number, price?: number): Promise<PriceCheckResult> {
   return request.get('/v1/purchase/price-check', { params: { productId, supplierId, price } })
 }
+
+// ---------- Excel 列表导入（校验后带入录单窗口） ----------
+export type PurchaseImportKind = 'receipt' | 'order'
+export interface PurchaseImportLine {
+  rowNo: number
+  productId: number
+  skuCode: string
+  productName: string
+  qty: number
+  unitPrice: number | null
+}
+export interface PurchaseImportPreview {
+  rows: PurchaseImportLine[]
+  errors: string[]
+}
+export function previewPurchaseImport(kind: PurchaseImportKind, file: File): Promise<PurchaseImportPreview> {
+  const data = new FormData()
+  data.append('file', file)
+  return request.post(`/v1/purchase/import/${kind}/preview`, data)
+}
+export function purchaseImportTemplate(kind: PurchaseImportKind): Promise<Blob> {
+  return request.get(`/v1/purchase/import/${kind}/template`, { responseType: 'blob' })
+}
