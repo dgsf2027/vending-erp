@@ -63,6 +63,47 @@ class PurchaseFlowTest extends BaseIntegrationTest {
     private Long productB;
     private Long supplierId;
 
+    @Autowired
+    private top.aole.vend.modules.purchase.service.PurchaseImportService importService;
+
+    @Test
+    void importedListsUseExistingDraftAndConfirmationFlow() throws Exception {
+        for (String kind : new String[]{"receipt", "order"}) {
+            org.springframework.mock.web.MockHttpServletResponse response = new org.springframework.mock.web.MockHttpServletResponse();
+            new top.aole.vend.modules.purchase.interfaces.PurchaseImportController(importService).template(kind, response);
+            byte[] content;
+            try (org.apache.poi.ss.usermodel.Workbook book = new org.apache.poi.xssf.usermodel.XSSFWorkbook(new java.io.ByteArrayInputStream(response.getContentAsByteArray()));
+                 java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
+                org.apache.poi.ss.usermodel.Row row = book.getSheetAt(0).createRow(1);
+                row.createCell(0).setCellValue(productMapper.selectById(productA).getSkuCode());
+                row.createCell(1).setCellValue(2.125);
+                row.createCell(2).setCellValue(3.1234);
+                book.write(out); content = out.toByteArray();
+            }
+            top.aole.vend.modules.purchase.service.PurchaseImportService.Preview preview = importService.preview(
+                new org.springframework.mock.web.MockMultipartFile("file", "list.xlsx", "", content), kind);
+            assertTrue(preview.getErrors().isEmpty());
+            top.aole.vend.modules.purchase.service.PurchaseImportService.Line line = preview.getRows().get(0);
+            if ("receipt".equals(kind)) {
+                ReceiptCreateReq req = new ReceiptCreateReq(); req.setSupplierId(supplierId); req.setBizDate(LocalDate.now());
+                ReceiptCreateReq.Item item = new ReceiptCreateReq.Item(); item.setProductId(line.getProductId()); item.setQty(line.getQty()); item.setUnitPrice(line.getUnitPrice());
+                req.setItems(Collections.singletonList(item));
+                Long id = receiptService.createDirect(req, OP);
+                assertEquals(0L, stockLedgerMapper.selectCount(new LambdaQueryWrapper<StockLedger>().eq(StockLedger::getProductId, productA)));
+                receiptService.confirm(id, OP);
+                assertEquals(1L, stockLedgerMapper.selectCount(new LambdaQueryWrapper<StockLedger>().eq(StockLedger::getProductId, productA)));
+            } else {
+                PoCreateReq req = new PoCreateReq(); req.setSupplierId(supplierId);
+                PoCreateReq.Item item = new PoCreateReq.Item(); item.setProductId(line.getProductId()); item.setQtyOrdered(line.getQty()); item.setUnitPrice(line.getUnitPrice());
+                req.setItems(Collections.singletonList(item));
+                Long id = poService.create(req, OP_NAME);
+                assertEquals(0, poService.inTransit(productA).compareTo(BigDecimal.ZERO));
+                poService.place(id, OP_NAME);
+                assertEquals(0, poService.inTransit(productA).compareTo(line.getQty()));
+            }
+        }
+    }
+
     @BeforeEach
     void initMasterData() {
         productA = createProduct("东鹏特饮500ml");

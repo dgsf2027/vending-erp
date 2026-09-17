@@ -2,6 +2,8 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import ProductSelect from '@/components/basedata/ProductSelect.vue'
+import PurchaseImportDialog from '@/components/purchase/PurchaseImportDialog.vue'
+import type { PurchaseImportKind, PurchaseImportLine } from '@/api/purchase'
 import RedFlushDialog from '@/components/doc/RedFlushDialog.vue'
 import CostAdjustDialog from '@/components/doc/CostAdjustDialog.vue'
 import DocDetailDrawer from '@/components/doc/DocDetailDrawer.vue'
@@ -20,6 +22,29 @@ import {
  * 订货单(在途/超期黄灯)→ 收货录入(应收/实收两列差异标注)→ 确认入库(自动过账+回写)。
  * 无订单直接录入为兜底通道;比价提示内嵌在录单行(涨幅>20% 黄灯)。
  */
+
+// Excel 校验通过后回填已有录单表单，保存与过账仍走原有接口。
+const importVisible = ref(false)
+const importKind = ref<PurchaseImportKind>('receipt')
+function openImport(kind: PurchaseImportKind) {
+  importKind.value = kind
+  importVisible.value = true
+}
+function applyImport(rows: PurchaseImportLine[]) {
+  if (importKind.value === 'receipt') {
+    quickReceive()
+    receiveForm.rows = rows.map((r) => ({
+      productId: r.productId, productName: r.productName, skuCode: r.skuCode,
+      expectQty: null, qty: Number(r.qty), unitPrice: Number(r.unitPrice), poItemId: null, hint: null,
+    }))
+  } else {
+    openPoForm()
+    poForm.placeNow = false
+    poForm.items = rows.map((r) => ({
+      productId: r.productId, qtyOrdered: Number(r.qty), unitPrice: r.unitPrice == null ? null : Number(r.unitPrice), hint: null,
+    }))
+  }
+}
 
 // ============================== 主数据 ==============================
 
@@ -417,6 +442,7 @@ onMounted(() => {
       <h3>
         📥 采购入库单 <span class="hint">确认后库存 +、加权成本更新;确认过的单不可改,只能红冲</span>
         <span style="margin-left: auto; display: flex; gap: 8px">
+          <el-button size="small" @click="openImport('receipt')">列表导入</el-button>
           <el-button type="primary" size="small" @click="quickReceive">⚡ 直接录入库</el-button>
         </span>
       </h3>
@@ -462,6 +488,7 @@ onMounted(() => {
       <h3>
         📋 订货单(可选)<span class="hint">先下单、到货再点数收货时用;超期未到亮黄灯</span>
         <span style="margin-left: auto; display: flex; gap: 8px">
+          <el-button size="small" @click="openImport('order')">列表导入</el-button>
           <el-button size="small" @click="openPoForm">＋ 新建订货单</el-button>
         </span>
       </h3>
@@ -555,8 +582,8 @@ onMounted(() => {
         <tbody>
           <tr v-for="(item, idx) in poForm.items" :key="idx">
             <td><ProductSelect v-model="item.productId" @update:model-value="checkPrice(item, poForm.supplierId)" /></td>
-            <td><el-input-number v-model="item.qtyOrdered" :min="1" :controls="false" style="width: 90px" /></td>
-            <td><el-input-number v-model="item.unitPrice" :min="0" :precision="2" :controls="false" style="width: 90px" @change="checkPrice(item, poForm.supplierId)" /></td>
+            <td><el-input-number v-model="item.qtyOrdered" :min="0.001" :controls="false" style="width: 90px" /></td>
+            <td><el-input-number v-model="item.unitPrice" :min="0" :precision="4" :controls="false" style="width: 90px" @change="checkPrice(item, poForm.supplierId)" /></td>
             <td>
               <span v-if="item.hint" class="mini" :class="{ 'price-warn': item.hint.warn }">
                 {{ item.hint.warn ? '⚠️ ' : '' }}{{ hintText(item.hint) }}
@@ -618,7 +645,7 @@ onMounted(() => {
               <span v-else-if="diffOf(row) === 0" class="chip c-green">✓ 一致</span>
               <span v-else class="chip c-amber">{{ diffOf(row)! > 0 ? '+' : '' }}{{ diffOf(row) }} 按实收</span>
             </td>
-            <td><el-input-number v-model="row.unitPrice" :min="0.0001" :precision="2" :controls="false" style="width: 80px" @change="checkPrice(row, receiveForm.supplierId)" /></td>
+            <td><el-input-number v-model="row.unitPrice" :min="0.0001" :precision="4" :controls="false" style="width: 80px" @change="checkPrice(row, receiveForm.supplierId)" /></td>
             <td><span class="num">{{ ((Number(row.qty) || 0) * (Number(row.unitPrice) || 0)).toFixed(2) }}</span></td>
             <td>
               <span v-if="row.hint" class="mini" :class="{ 'price-warn': row.hint.warn }">
@@ -718,6 +745,8 @@ onMounted(() => {
       v-model="costAdjustVisible" :doc-id="reverseDocId"
       :product-names="reverseProductNames" @done="afterReverse"
     />
+
+    <PurchaseImportDialog v-model="importVisible" :kind="importKind" @import="applyImport" />
 
     <!-- 通用单据详情抽屉(P2-3:入库单号点开即达) -->
     <DocDetailDrawer v-model="docDrawerVisible" :doc-id="docDrawerId" />
