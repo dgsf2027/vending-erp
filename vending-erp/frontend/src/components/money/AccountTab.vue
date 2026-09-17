@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import AccountBillPanel from './AccountBillPanel.vue'
+const billImportVisible = ref(false)
 import {
   ACCOUNT_TYPES,
   REAL_ACCOUNT_TYPES,
@@ -177,6 +179,7 @@ onMounted(() => {
           </el-radio-button>
         </el-radio-group>
       </span>
+      <el-button @click="billImportVisible = true">账单导入</el-button>
       <el-button type="primary" @click="openCreate">＋ 新建账户</el-button>
     </div>
 
@@ -230,6 +233,8 @@ onMounted(() => {
     </div>
 
     <!-- 新建账户 -->
+    <AccountBillPanel v-model="billImportVisible" :accounts="rows" />
+
     <el-dialog v-model="formVisible" title="新建资金账户" width="480px">
       <el-form label-width="110px">
         <el-form-item label="账户名" required>
