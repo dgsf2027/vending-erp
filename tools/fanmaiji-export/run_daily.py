@@ -53,6 +53,7 @@ def main() -> int:
             "status": "running",
             "log": str(log_path),
         }
+        command += ["--date", status["queryDate"]]
 
         def save_status() -> None:
             temporary = root / "run" / "last-status.json.tmp"

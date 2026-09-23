@@ -1,6 +1,14 @@
-# fanmaiji.top 导出配置。选择器按优先顺序尝试；联真后请用真实页面检查并按需调整。
-# 联真通过后，独立 LaunchAgent 每天 07:30 经 run_daily.py 下载昨日销售。
-# 未核实的配置保留 verified:false；不能仅切换开关而跳过真实导出核对。
+# 2026-09-23 在 A 机用户已登录的 Chrome 中核实。
+# 独立 LaunchAgent 每天 07:30 经 run_daily.py 下载昨日销售。
+
+browser:
+  mode: cdp
+  cdp_url: "http://127.0.0.1:9222"
+  base_url: "https://fanmaiji.top"
+  start_url: "/runspace_pc/salesManager/deliveryList"
+  initial_response_path: "/delivery-log/page"
+  session_success_selectors:
+    - 'input.el-range-input[placeholder="开始日期"]'
 
 login:
   verified: false                 # 尚未完成真实登录验证；禁止自动执行。
@@ -25,18 +33,28 @@ login:
 
 exports:
   sales:            # 销售管理 → 出货明细(查询限当月+上月,导出支持一年)
-    verified: false
+    verified: true
+    async_export: true
+    expected_function: "出货明细"
+    validate_sales_report: true
+    url_path: "/runspace_pc/salesManager/deliveryList"
     menu_selectors:
-      - "text=出货明细"
+      - 'a[href="/runspace_pc/salesManager/deliveryList"]'
     export_button_selectors:
-      - "button:has-text('导出')"
-      - "text=导出"
+      - "button:has-text('导出'):visible"
+    export_confirm_text: "确定要导出数据?"
+    export_confirm_selectors:
+      - ".el-message-box:visible button:has-text('确定')"
     date_range_param: day           # 默认按昨天；--month 可做补录
     date_filters:
-      verified: false              # 未核实前禁止登录/查询/导出，不使用猜测的控件。
-      start_selectors: []
-      end_selectors: []
-      apply_selectors: []
+      verified: true
+      response_path: "/delivery-log/page"
+      start_selectors:
+        - 'input.el-range-input[placeholder="开始日期"]'
+      end_selectors:
+        - 'input.el-range-input[placeholder="结束日期"]'
+      apply_selectors:
+        - "button:has-text('查询'):visible"
     date_format: "%Y-%m-%d %H:%M:%S"
   replenish:        # 数据管理 → 系统补货记录(货道级,负数=取出调整)
     verified: false

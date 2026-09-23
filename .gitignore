@@ -19,3 +19,4 @@ vending-erp/frontend/.vite/
 tools/fanmaiji-export/downloads/
 tools/fanmaiji-export/logs/
 tools/fanmaiji-export/.fanmaiji-export.lock
+outputs/fanmaiji/
