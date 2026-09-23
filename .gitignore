@@ -5,6 +5,7 @@ dist/
 *.log
 .env
 .env.*
+!tools/fanmaiji-export/.env.example
 __pycache__/
 *.pyc
 .idea/
@@ -15,3 +16,8 @@ vending-erp/deploy/storage/
 # 前端构建缓存/本地项目包
 vending-erp/frontend/.vite/
 *.zip
+tools/fanmaiji-export/downloads/
+tools/fanmaiji-export/logs/
+tools/fanmaiji-export/.fanmaiji-export.lock
+outputs/fanmaiji/
+tools/fanmaiji-export/vend-credentials.json

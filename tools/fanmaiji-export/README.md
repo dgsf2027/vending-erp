@@ -1,30 +1,53 @@
-# fanmaiji.top 后台数据自动下载框架(S0-4)
+# 每日销售抓取与 vend 导入
 
-> 状态:**脚本框架,未联真**。需要老板把真实账密填进 `.env` 后才能试跑(AI 永不代输密码)。
-> 用途:每天自动下载三类文件 → 丢进 ERP 导入中心:①出货明细(销售)②系统补货记录(出库上架)③商品列表(SKU 别名初始化)。
+每天 **07:00（Asia/Shanghai）**，A 机通过现有已登录 Chrome 抓取昨天 00:00:00–23:59:59 的「出货明细」，校验原始 XLS，再通过 vend 正规销售导入接口上传、确认并记录批次回执。
 
-## 使用
+用户提供的 `https://vend.vvaix.com/purchase` 是同一项目的采购入库页；销售数据进入 [导入中心](https://vend.vvaix.com/import) 的「出货明细 → 销售记录」，不生成采购单。导入会进入销售与库存推算、成本及报表；不会自动改商品参考价或生成资金结算。
+
+## A 机配置
+
+- 运行目录：`/Users/yh-1/fanmaiji-export-run`；代码在 `code/tools/fanmaiji-export`。
+- Python：运行目录的 `.venv/bin/python`；依赖固定在 `requirements.txt`。
+- 售货机浏览器：A 机现有 Chrome，CDP `http://127.0.0.1:9222`；仅新建和清理本次标签页及其派生页，保留用户其他页面。
+- vend 接口：`http://127.0.0.1:8089`，已核实为 `vend.vvaix.com` 隧道对应的同一生产应用。
+- vend 专用账号：`fanmaiji_daily_sync`，通过正规注册接口建立，默认「店员」角色。每次任务走正常登录，避免依赖过期的个人浏览器令牌；不伪造签名、不启用占位鉴权。
+- 凭据文件：运行目录的 `vend-credentials.json`，包含 `base_url`、`username`、`password`，必须为当前用户所有且权限 600。密码不进 Git、命令参数或日志；不要把这个文件复制到仓库。
+- LaunchAgent：`/Users/yh-1/Library/LaunchAgents/com.aole.fanmaiji-export.plist`；`StartCalendarInterval` 为 7:00，`RunAtLoad=false`。
+
+A 机 Chrome 需保持运行、9222 可连接且售货机登录有效。源站登录失效时任务明确失败，不另开空白浏览器。原有财务任务同在 07:00，售货机使用独立运行目录和专用任务页。
+
+## 入口及状态
 
 ```bash
-cd tools/fanmaiji-export
-cp .env.example .env        # 填 FANMAIJI_USER / FANMAIJI_PASS
-pip3 install playwright pyyaml python-dotenv && python3 -m playwright install chromium
-python3 export.py --type sales --month 2026-07     # 出货明细
-python3 export.py --type replenish --month 2026-07 # 系统补货记录
-python3 export.py --type products                  # 商品列表
-python3 export.py --all                            # 三样全下(默认上个月+本月)
+/Users/yh-1/fanmaiji-export-run/.venv/bin/python /Users/yh-1/fanmaiji-export-run/code/tools/fanmaiji-export/run_daily.py --runtime-dir /Users/yh-1/fanmaiji-export-run --plan
 ```
 
-下载文件落在 `downloads/<YYYY-MM-DD>/`,文件名带类型+区间,可直接喂 ERP 导入中心。
+去掉 `--plan` 执行完整抓取与销售导入。`run_daily.py` 固定上海时区昨日日期，互斥防重并限制单次 15 分钟；`sync_daily.py` 串联正规登录、下载和导入。独立 `export.py` 仍只下载，供原始文件排查使用。
 
-## 首次联真时要做的事(老板配合一次)
+- `downloads/执行日期/`：保留原始 XLS，不去重行、不修改金额。
+- `logs/`：逐次任务日志。
+- `run/last-status.json`：调度退出状态及当前同步结果。
+- `run/last-sync.json`：查询日期、文件与导入结果。
+- `run/imports/vend-sales-YYYY-MM-DD.json`：当日原始文件 SHA-256、验证统计、确认回执及批次 ID；原子写入且权限 600。
 
-1. 填 `.env`
-2. 跑 `python3 export.py --probe`:有头模式打开浏览器,人工登录一次,脚本记录登录后各菜单的真实 URL/按钮 → 回填 `config.yaml` 的 selectors 区(目前是根据调研摸底写的占位值,菜单名对但选择器待核)
-3. 之后即可无头定时跑(可挂 crontab,见 config.yaml 注释)
+`needs_attention`、`failed`、`uncertain` 都不是成功。应按日志和回执核查，不能删除状态文件后盲目重新确认。
 
-## 安全边界
+## 校验与重复运行
 
-- 账密只存本地 `.env`(已在 .gitignore,永不入库)
-- 脚本只做「登录→导出→下载」,不碰后台任何修改类操作
-- 查询窗口约束:出货明细后台只能查当月+上月 → 每月至少跑一次,别断档(报告 §B.4)
+1. 等待初始销售查询完成，再等待与指定日期完全一致的查询响应及页面总数，防止误用默认今日条数。
+2. 检查 XLS 签名、必需列、每行日期/商品/设备/订单号/数量金额，并与源站查询总数一致。
+3. 同日重复抓取先重新校验已有原表，合格则复用；厂家短时间重复下载会限频，不自动反复下载。缓存只代表已有原表，不能证明厂家没有在条数不变时修订金额。
+4. 原始 XLS 不转换，vend 的 `ExcelParser` 按签名支持 XLS/XLSX。上传文件名包含日期及摘要，预览列、类型和行数全部一致才确认。
+5. 导入前后分页核对唯一批次；成功需 `rowFail=0`、`rowOk+rowDup=rowTotal`、`pendingBind=0`。改价提示保留给人工处理。
+6. 相同日期/摘要再次运行只查询已有成功批次。确认超时或响应丢失时记录不确定状态，下次只查批次，不再次确认。已有日文件摘要变化则停止自动导入，避免现有后端按同订单行序号去重造成误差。
+7. 已验证零销售日记为 `no_data`，不提交空批次。
+
+2026-09-22 原始报表为 338 行、240 单、362 件、1,401.40 元；源站首页为 239 单、1,388.50 元。原表与首页差异保留，不自行删单或改金额。用户后续已明确授权每天把原始销售明细导入 vend。
+
+## 验证
+
+```bash
+python3 -m unittest discover -s tools/fanmaiji-export -p 'test_*.py'
+```
+
+后端 `ExcelParserTest` 覆盖真实 HSSF/XSSF；导入相关数据库回归使用本机独立测试库，不能指向生产。历史只导出阶段的验收见 [2026-09-23 记录](STATUS-2026-09-23.md)；最新运行以 A 机状态、日志及 vend 批次为准。

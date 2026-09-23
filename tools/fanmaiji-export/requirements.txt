@@ -1,0 +1,4 @@
+playwright==1.60.0
+PyYAML==6.0.3
+python-dotenv==1.2.1
+xlrd==2.0.2

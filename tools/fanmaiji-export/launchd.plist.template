@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.aole.fanmaiji-export</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__RUNTIME__/.venv/bin/python</string>
+    <string>__RUNTIME__/code/tools/fanmaiji-export/run_daily.py</string>
+    <string>--runtime-dir</string><string>__RUNTIME__</string>
+  </array>
+  <key>WorkingDirectory</key><string>__RUNTIME__</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>TZ</key><string>Asia/Shanghai</string></dict>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>__RUNTIME__/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key><string>__RUNTIME__/logs/launchd.err.log</string>
+</dict>
+</plist>
