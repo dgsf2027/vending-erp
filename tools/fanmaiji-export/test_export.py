@@ -547,6 +547,185 @@ class CDPTests(unittest.TestCase):
         fresh.new_context.assert_called_once_with(accept_downloads=True, timezone_id="Asia/Shanghai")
         self.pw.chromium.connect_over_cdp.assert_not_called()
 
+    def enable_refresh(self) -> None:
+        self.options.update(base_url="https://fanmaiji.top", refresh_login=True,
+                            initial_response_path="/delivery-log/page", login=verified_login())
+        self.owned_page.url = "https://fanmaiji.top/login"
+
+    def test_expired_redirect_refreshes_once_then_revalidates_initial_query(self) -> None:
+        self.enable_refresh()
+        failed, succeeded = MagicMock(), MagicMock()
+        failed.__exit__.side_effect = TimeoutError("initial query did not arrive")
+        response = Mock(ok=True)
+        response.json.return_value = {"code": 200, "status": True, "data": {"total": 338}}
+        succeeded.__enter__.return_value = Mock(value=response)
+        self.owned_page.expect_response.side_effect = [failed, succeeded]
+        with patch.object(export, "_first_locator", return_value=Mock()), \
+                patch.object(export, "_wait_first_locator", return_value=Mock()), \
+                patch.object(export, "_check_login_obstacles"), \
+                patch.object(export, "_source_credentials", return_value=("account", "password")), \
+                patch.object(export, "_login") as login, \
+                patch.object(export, "_wait_pagination_total") as pagination:
+            with export._browser_page(self.pw, self.options) as page:
+                self.assertIs(page, self.owned_page)
+        self.assertEqual(self.owned_page.goto.call_count, 2)
+        login.assert_called_once_with(self.owned_page, "https://fanmaiji.top", self.options["login"], "account", "password")
+        pagination.assert_called_once_with(self.owned_page, 338)
+        self.owned_page.close.assert_called_once_with()
+        self.assert_existing_browser_untouched()
+
+    def test_refresh_does_not_repeat_if_new_sales_query_fails(self) -> None:
+        self.enable_refresh()
+        with patch.object(export, "_initialize_cdp_session", side_effect=export.ExportError("query failed")) as initialize, \
+                patch.object(export, "_first_locator", return_value=Mock()), \
+                patch.object(export, "_check_login_obstacles"), \
+                patch.object(export, "_source_credentials", return_value=("account", "password")), \
+                patch.object(export, "_login") as login:
+            with self.assertRaisesRegex(export.ExportError, "query failed"):
+                with export._browser_page(self.pw, self.options):
+                    self.fail("failed second query must stop")
+        self.assertEqual(initialize.call_count, 2)
+        login.assert_called_once()
+        self.assert_existing_browser_untouched()
+
+    def test_ordinary_network_error_never_triggers_login_or_credentials(self) -> None:
+        self.enable_refresh()
+        self.owned_page.url = "https://fanmaiji.top/runspace_pc/salesManager/deliveryList"
+        with patch.object(export, "_initialize_cdp_session", side_effect=export.ExportError("network")), \
+                patch.object(export, "_source_credentials") as credentials, patch.object(export, "_login") as login:
+            with self.assertRaisesRegex(export.ExportError, "network"):
+                with export._browser_page(self.pw, self.options):
+                    self.fail("network failure must stop")
+        credentials.assert_not_called()
+        login.assert_not_called()
+        self.assert_existing_browser_untouched()
+
+    def test_expired_login_without_credentials_stops_without_login(self) -> None:
+        self.enable_refresh()
+        with patch.object(export, "_initialize_cdp_session", side_effect=export.ExportError("expired")), \
+                patch.object(export, "_first_locator", return_value=Mock()), \
+                patch.object(export, "_check_login_obstacles"), \
+                patch.dict(export.os.environ, {"FANMAIJI_SOURCE_CREDENTIALS_FILE": ""}), \
+                patch.object(export, "_login") as login:
+            with self.assertRaisesRegex(export.ExportError, "未配置"):
+                with export._browser_page(self.pw, self.options):
+                    self.fail("missing credentials must stop")
+        login.assert_not_called()
+        self.assert_existing_browser_untouched()
+
+    def test_login_refresh_requires_positive_same_origin_form(self) -> None:
+        self.enable_refresh()
+        for address in ("https://evil.example/login", "https://fanmaiji.top/login/", "https://fanmaiji.top/login-other"):
+            self.owned_page.url = address
+            with patch.object(export, "_source_credentials") as credentials:
+                self.assertFalse(export._refresh_expired_cdp_session(self.owned_page, self.options, "unused"))
+            credentials.assert_not_called()
+        self.owned_page.url = "https://fanmaiji.top/login"
+        with patch.object(export, "_first_locator", return_value=None), patch.object(export, "_source_credentials") as credentials:
+            self.assertFalse(export._refresh_expired_cdp_session(self.owned_page, self.options, "unused"))
+        credentials.assert_not_called()
+
+    def test_login_config_is_carried_without_mutating_browser_config(self) -> None:
+        browser = dict(self.options, refresh_login=True, base_url="https://fanmaiji.top")
+        config = {"browser": browser, "login": verified_login()}
+        actual = export._browser_options(config)
+        self.assertEqual(actual["login"], config["login"])
+        self.assertNotIn("login", browser)
+        export._validate_browser(config)
+        config["login"]["verified"] = False
+        with self.assertRaises(export.ExportError):
+            export._validate_browser(config)
+
+
+def verified_login() -> dict:
+    return {"verified": True, "url_path": "/login", "user_selectors": ["#managername"],
+            "pass_selectors": ["#managerpassword"], "submit_selectors": ["div[onclick='handleLogin()']"],
+            "success_selectors": ["header.main-header"], "captcha_selectors": ["#captcha"],
+            "error_selectors": ["#error"]}
+
+
+class LoginRefreshTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.page = Mock(url="https://fanmaiji.top/login")
+        self.login = verified_login()
+
+    def test_login_waits_for_positive_async_success_marker(self) -> None:
+        with patch.object(export, "_verified_login_page", return_value=True), \
+                patch.object(export, "_first_locator", return_value=None), \
+                patch.object(export, "_fill_first") as fill, patch.object(export, "_click_first") as click, \
+                patch.object(export, "_wait_first_locator", return_value=Mock()) as success:
+            export._login(self.page, "https://fanmaiji.top", self.login, "user", "secret")
+        self.assertEqual(fill.call_count, 2)
+        click.assert_called_once()
+        success.assert_called_once_with(self.page, ["header.main-header"])
+
+    def test_visible_captcha_stops_before_input_or_submit(self) -> None:
+        with patch.object(export, "_verified_login_page", return_value=True), \
+                patch.object(export, "_first_locator", return_value=Mock()), \
+                patch.object(export, "_fill_first") as fill, patch.object(export, "_click_first") as click:
+            with self.assertRaisesRegex(export.ExportError, "验证码"):
+                export._login(self.page, "https://fanmaiji.top", self.login, "user", "secret")
+        fill.assert_not_called()
+        click.assert_not_called()
+
+    def test_bad_login_stops_after_single_submit(self) -> None:
+        def controls(page, selectors, **kwargs):
+            return Mock() if selectors == ["#error"] else None
+        with patch.object(export, "_verified_login_page", return_value=True), \
+                patch.object(export, "_first_locator", side_effect=controls), \
+                patch.object(export, "_fill_first"), patch.object(export, "_click_first") as click:
+            with self.assertRaisesRegex(export.ExportError, "登录错误"):
+                export._login(self.page, "https://fanmaiji.top", self.login, "user", "secret")
+        click.assert_called_once()
+
+    def test_missing_success_marker_is_failure_even_if_form_disappeared(self) -> None:
+        with patch.object(export, "_verified_login_page", return_value=True), \
+                patch.object(export, "_first_locator", return_value=None), \
+                patch.object(export, "_fill_first"), patch.object(export, "_click_first"), \
+                patch.object(export, "_wait_first_locator", return_value=None):
+            with self.assertRaisesRegex(export.ExportError, "成功标记"):
+                export._login(self.page, "https://fanmaiji.top", self.login, "user", "secret")
+
+    def test_browser_fill_failure_never_exposes_secret_cause(self) -> None:
+        with patch.object(export, "_verified_login_page", return_value=True), \
+                patch.object(export, "_first_locator", return_value=None), \
+                patch.object(export, "_fill_first", side_effect=RuntimeError("raw-secret-password")):
+            with self.assertRaises(export.ExportError) as caught:
+                export._login(self.page, "https://fanmaiji.top", self.login, "user", "secret")
+        self.assertNotIn("raw-secret", str(caught.exception))
+        self.assertTrue(caught.exception.__suppress_context__)
+
+    def test_credentials_require_private_regular_file_and_valid_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "credentials.json"
+            path.write_text(json.dumps({"username": "user", "password": "runtime-secret"}))
+            path.chmod(0o600)
+            with patch.dict(export.os.environ, {"FANMAIJI_SOURCE_CREDENTIALS_FILE": str(path)}):
+                self.assertEqual(export._source_credentials(), ("user", "runtime-secret"))
+                path.chmod(0o644)
+                with self.assertRaises(export.ExportError) as caught:
+                    export._source_credentials()
+                self.assertNotIn("runtime-secret", str(caught.exception))
+                path.chmod(0o600)
+                with patch.object(export.os, "getuid", return_value=path.stat().st_uid + 1):
+                    with self.assertRaises(export.ExportError):
+                        export._source_credentials()
+                path.write_text(json.dumps({"username": "user", "password": "runtime-secret", "extra": "forbidden"}))
+                with self.assertRaises(export.ExportError):
+                    export._source_credentials()
+
+    def test_credentials_reject_symlink_and_relative_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "private.json"
+            path.write_text(json.dumps({"username": "user", "password": "secret"}))
+            path.chmod(0o600)
+            link = Path(directory) / "link.json"
+            link.symlink_to(path)
+            for configured in (str(link), "relative.json"):
+                with patch.dict(export.os.environ, {"FANMAIJI_SOURCE_CREDENTIALS_FILE": configured}):
+                    with self.assertRaises(export.ExportError):
+                        export._source_credentials()
+
 
 class LockTests(unittest.TestCase):
     def test_lock_blocks_second_owner(self) -> None:
