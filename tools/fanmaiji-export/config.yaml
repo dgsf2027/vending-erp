@@ -1,23 +1,62 @@
-# fanmaiji.top 导出配置 —— selectors 为占位值(按调研附录 B 的菜单名写),首次 --probe 联真后回填
-# 定时示例(crontab):每天 07:30 下载昨日数据
-#   30 7 * * * cd /Users/yh-1/系统开发/智慧园区/tools/fanmaiji-export && python3 export.py --all >> cron.log 2>&1
+# fanmaiji.top 导出配置。选择器按优先顺序尝试；联真后请用真实页面检查并按需调整。
+# 联真通过后，独立 LaunchAgent 每天 07:30 经 run_daily.py 下载昨日销售。
+# 未核实的配置保留 verified:false；不能仅切换开关而跳过真实导出核对。
 
 login:
-  url_path: "/login"                # 待核:登录页路径
-  user_selector: "input[name=username]"   # 占位
-  pass_selector: "input[name=password]"   # 占位
-  submit_selector: "button[type=submit]"  # 占位
+  verified: false                 # 尚未完成真实登录验证；禁止自动执行。
+  url_path: "/login"
+  # 以下字段来自已查看的登录页；后台 JS 负责 RSA 密码处理。
+  user_selectors:
+    - "#managername"
+  pass_selectors:
+    - "#managerpassword"
+  submit_selectors:
+    - "div[onclick='handleLogin()']"
+  error_selectors:
+    - ".ant-message-error"
+    - ".el-message--error"
+    - "[role='alert']"
+  captcha_selectors:
+    - "input[name*='captcha' i]"
+    - "input[placeholder*='验证码']"
+    - ".captcha"
+  # 必须在联真后填写登录成功的唯一标记，缺失时拒绝执行。
+  success_selectors: []
 
 exports:
   sales:            # 销售管理 → 出货明细(查询限当月+上月,导出支持一年)
-    menu_text: "出货明细"
-    export_button_text: "导出"
-    date_range_param: month         # 按月导
+    verified: false
+    menu_selectors:
+      - "text=出货明细"
+    export_button_selectors:
+      - "button:has-text('导出')"
+      - "text=导出"
+    date_range_param: day           # 默认按昨天；--month 可做补录
+    date_filters:
+      verified: false              # 未核实前禁止登录/查询/导出，不使用猜测的控件。
+      start_selectors: []
+      end_selectors: []
+      apply_selectors: []
+    date_format: "%Y-%m-%d %H:%M:%S"
   replenish:        # 数据管理 → 系统补货记录(货道级,负数=取出调整)
-    menu_text: "系统补货记录"
-    export_button_text: "导出"
-    date_range_param: month
+    verified: false
+    menu_selectors:
+      - "text=系统补货记录"
+    export_button_selectors:
+      - "button:has-text('导出')"
+      - "text=导出"
+    date_range_param: day
+    date_filters:
+      verified: false
+      start_selectors: []
+      end_selectors: []
+      apply_selectors: []
+    date_format: "%Y-%m-%d %H:%M:%S"
   products:         # 商品管理 → 商品列表(98 个,含条码,别名初始化用)
-    menu_text: "商品管理"
-    export_button_text: "导出"
+    verified: false
+    menu_selectors:
+      - "text=商品管理"
+    export_button_selectors:
+      - "button:has-text('导出')"
+      - "text=导出"
     date_range_param: none
