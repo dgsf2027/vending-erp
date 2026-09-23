@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bound the daily sales job and record its outcome for operators."""
+"""Bound the daily sales download/import job and record its outcome."""
 from __future__ import annotations
 
 import argparse
@@ -36,7 +36,7 @@ def main() -> int:
         "FANMAIJI_DOWNLOAD_DIR": str(root / "downloads"),
         "FANMAIJI_LOCK_FILE": str(root / "run" / "export.lock"),
     })
-    command = [sys.executable, str(BASE / "export.py"), "--type", "sales"]
+    command = [sys.executable, str(BASE / "sync_daily.py"), "--runtime-dir", str(root)]
     if args.plan:
         return subprocess.call(command + ["--plan"], env=env, cwd=BASE)
     with (root / "run" / "daily.lock").open("a") as lock:
@@ -46,6 +46,7 @@ def main() -> int:
             print("An export is already running; skipping this trigger.")
             return 75
         started = dt.datetime.now(ZoneInfo("Asia/Shanghai"))
+        env["FANMAIJI_RUN_ID"] = started.isoformat()
         log_path = root / "logs" / (started.strftime("%Y-%m-%dT%H%M%S.%f") + ".log")
         status = {
             "startedAt": started.isoformat(),
@@ -80,6 +81,14 @@ def main() -> int:
         except OSError:
             code = 2
             status["status"] = "failed_to_start"
+        sync_path = root / "run" / "last-sync.json"
+        if sync_path.is_file():
+            try:
+                sync_status = json.loads(sync_path.read_text(encoding="utf-8"))
+                if sync_status.get("runId") == env["FANMAIJI_RUN_ID"]:
+                    status["sync"] = sync_status
+            except (ValueError, OSError):
+                pass
         status.update(exitCode=code, finishedAt=dt.datetime.now(ZoneInfo("Asia/Shanghai")).isoformat())
         save_status()
         print(json.dumps(status, ensure_ascii=False))

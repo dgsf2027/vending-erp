@@ -18,7 +18,7 @@ class DailyTests(unittest.TestCase):
     def run_child(self, source, expected_code, expected_status):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            (root / "export.py").write_text(source, encoding="utf-8")
+            (root / "sync_daily.py").write_text(source, encoding="utf-8")
             with patch.object(daily, "BASE", root), patch("sys.argv", [
                 "run_daily.py", "--runtime-dir", str(root), "--timeout", "1"
             ]), contextlib.redirect_stdout(io.StringIO()):

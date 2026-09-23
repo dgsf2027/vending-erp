@@ -20,3 +20,4 @@ tools/fanmaiji-export/downloads/
 tools/fanmaiji-export/logs/
 tools/fanmaiji-export/.fanmaiji-export.lock
 outputs/fanmaiji/
+tools/fanmaiji-export/vend-credentials.json

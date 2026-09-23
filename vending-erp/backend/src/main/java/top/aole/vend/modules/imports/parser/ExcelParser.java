@@ -7,7 +7,7 @@ import org.apache.poi.ss.usermodel.DateUtil;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.springframework.stereotype.Component;
 import top.aole.vend.common.exception.BizException;
 
@@ -20,7 +20,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * xlsx 解析器(POI):读第一个 sheet,第一非空行当表头,输出规整文本。
+ * xls/xlsx 解析器(POI):按文件内容识别格式,读第一个 sheet,第一非空行当表头,输出规整文本。
  * 规整规则:数字去掉浮点尾巴(3.0→3);日期统一 yyyy-MM-dd HH:mm:ss;公式取缓存值。
  * fanmaiji 导出常见脏点已兜:文本型日期、纯数字条码被 Excel 存成 double。
  */
@@ -31,7 +31,7 @@ public class ExcelParser {
     private final DataFormatter formatter = new DataFormatter();
 
     public ParsedSheet parse(InputStream in) {
-        try (Workbook wb = new XSSFWorkbook(in)) {
+        try (Workbook wb = openWorkbook(in)) {
             Sheet sheet = wb.getSheetAt(0);
             ParsedSheet result = new ParsedSheet();
             int headerRowIdx = -1;
@@ -75,7 +75,7 @@ public class ExcelParser {
             }
             return result;
         } catch (IOException e) {
-            throw new BizException("Excel 解析失败(仅支持 .xlsx):" + e.getMessage());
+            throw new BizException("Excel 解析失败，请上传未加密、未损坏的 .xls 或 .xlsx 文件");
         }
     }
 
@@ -85,7 +85,7 @@ public class ExcelParser {
      * 表头名→值 的 Map 会互相覆盖,必须按列索引读(M1-6)。
      */
     public RawSheet parseRaw(InputStream in, String sheetNameContains) {
-        try (Workbook wb = new XSSFWorkbook(in)) {
+        try (Workbook wb = openWorkbook(in)) {
             Sheet sheet = null;
             for (int i = 0; i < wb.getNumberOfSheets(); i++) {
                 String name = wb.getSheetName(i);
@@ -121,7 +121,17 @@ public class ExcelParser {
             }
             return result;
         } catch (IOException e) {
-            throw new BizException("Excel 解析失败(仅支持 .xlsx):" + e.getMessage());
+            throw new BizException("Excel 解析失败，请上传未加密、未损坏的 .xls 或 .xlsx 文件");
+        }
+    }
+
+    /** 由 POI 检查文件签名，避免把售卖机的真实 OLE .xls 当作 OOXML 读取。 */
+    private Workbook openWorkbook(InputStream in) {
+        try {
+            return WorkbookFactory.create(in);
+        } catch (IOException | RuntimeException e) {
+            // 空文件、非 Excel、加密及损坏文件都作为受控业务错误返回。
+            throw new BizException("Excel 解析失败，请上传未加密、未损坏的 .xls 或 .xlsx 文件");
         }
     }
 
