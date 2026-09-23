@@ -80,6 +80,7 @@ def main(argv=None) -> int:
         save_result(result_path, result)
         os.environ["FANMAIJI_DOWNLOAD_DIR"] = str(root / "downloads")
         os.environ["FANMAIJI_LOCK_FILE"] = str(root / "run" / "export.lock")
+        os.environ["FANMAIJI_SOURCE_CREDENTIALS_FILE"] = str(root / "fanmaiji-credentials.json")
         files = exporter.run(["sales"], date_range=date_range)
         if len(files) != 1:
             raise ValueError("销售抓取没有返回唯一原始文件")
@@ -95,6 +96,8 @@ def main(argv=None) -> int:
         # Vendor/API errors can contain uploaded rows or credentials. The client
         # writes safe receipt details; the outer boundary never prints raw errors.
         result.update(status="failed", stage=stage, errorType=type(exc).__name__)
+        if isinstance(exc, exporter.ExportError):
+            result["error"] = str(exc)
         print(f"每日同步未完成：{stage}，错误类型 {type(exc).__name__}；请检查本次日志和导入回执", file=sys.stderr)
         code = 2
     result.update(finishedAt=dt.datetime.now(SHANGHAI).isoformat(), exitCode=code)

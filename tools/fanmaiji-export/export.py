@@ -3,7 +3,7 @@
 
 The exporter deliberately stops at downloading files. It never uploads a file
 to the ERP and it never changes data in the vendor console. Credentials are
-read from ``.env`` at runtime and are not included in logs, filenames, or
+read from private runtime files and are not included in logs, filenames, or
 configuration files.
 
 The site selectors are kept in ``config.yaml`` because the vendor can change
@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import re
+import stat
 import sys
 import tempfile
 import time
@@ -328,28 +329,80 @@ def _wait_network_idle(page: Any, timeout: int = DEFAULT_TIMEOUT_MS) -> None:
 def _login(page: Any, base_url: str, login: dict[str, Any], user: str, password: str) -> None:
     _validate_login(login)
     login_path = str(login.get("url_path", "/login"))
-    page.goto(urljoin(base_url.rstrip("/") + "/", login_path.lstrip("/")), wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
-    _fill_first(page, login.get("user_selectors", login.get("user_selector")), user)
-    _fill_first(page, login.get("pass_selectors", login.get("pass_selector")), password)
-    _click_first(page, login.get("submit_selectors", login.get("submit_selector")))
-    _wait_network_idle(page)
-    page.wait_for_timeout(300)
-
-    error = _first_locator(page, login.get("error_selectors", [
-        ".ant-message-error", ".el-message--error", ".layui-layer-content", "[role='alert']"
-    ]), required=False)
-    if error is not None:
-        raise ExportError("后台显示登录错误，请人工检查；原始错误内容不写入日志")
-    captcha = _first_locator(page, login.get("captcha_selectors", [
-        "input[name*='captcha' i]", "input[placeholder*='验证码']", ".captcha"
-    ]), required=False)
-    if captcha is not None:
-        raise ExportError("后台要求验证码，无法进行无人值守登录；请先完成联真或配置可用的登录方式")
-    # Absence of the login form alone does not prove successful authentication.
-    success = _first_locator(page, login.get("success_selectors", []), required=False)
-    if success is None:
-        raise ExportError("未找到已核实的登录成功标记，拒绝继续导出")
+    try:
+        page.goto(urljoin(base_url.rstrip("/") + "/", login_path.lstrip("/")), wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
+        if not _verified_login_page(page, base_url, login):
+            raise ExportError("未在已核实的同源登录页找到完整登录表单，停止登录")
+        _check_login_obstacles(page, login, check_error=False)
+        _fill_first(page, login.get("user_selectors"), user)
+        _fill_first(page, login.get("pass_selectors"), password)
+        _click_first(page, login.get("submit_selectors"))
+        _wait_network_idle(page)
+        _check_login_obstacles(page, login)
+        # Success markup is asynchronous; disappearing inputs are not proof.
+        success = _wait_first_locator(page, login.get("success_selectors", []))
+        _check_login_obstacles(page, login)
+        if success is None:
+            raise ExportError("未找到已核实的登录成功标记，拒绝继续导出")
+    except ExportError as exc:
+        # Playwright fill/click causes can contain secret input values.
+        raise ExportError(str(exc)) from None
+    except Exception:
+        raise ExportError("源站登录未完成，已停止；原始响应和输入值不写入日志") from None
     LOGGER.info("后台登录成功")
+
+
+def _check_login_obstacles(page: Any, login: dict[str, Any], *, check_error: bool = True) -> None:
+    if _first_locator(page, login.get("captcha_selectors", [
+        "input[name*='captcha' i]", "input[placeholder*='验证码']", ".captcha"
+    ]), required=False) is not None:
+        raise ExportError("后台要求验证码，已停止自动登录；请在 A 机 Chrome 完成人工验证")
+    if check_error and _first_locator(page, login.get("error_selectors", [
+        ".ant-message-error", ".el-message--error", ".layui-layer-content", "[role='alert']"
+    ]), required=False) is not None:
+        raise ExportError("后台显示登录错误，已停止重试；原始错误内容不写入日志")
+
+
+def _verified_login_page(page: Any, base_url: str, login: dict[str, Any]) -> bool:
+    """Only the same-origin, exact login route with every verified control qualifies."""
+    try:
+        current, base = urlsplit(page.url), urlsplit(base_url)
+        if (current.scheme, current.netloc, current.path) != (base.scheme, base.netloc, "/login"):
+            return False
+        if str(login.get("url_path", "/login")) != "/login":
+            return False
+        return all(_first_locator(page, login.get(key), required=False) is not None
+                   for key in ("user_selectors", "pass_selectors", "submit_selectors"))
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def _source_credentials() -> tuple[str, str]:
+    """Read only the explicitly configured, private, current-user runtime file."""
+    configured = os.getenv("FANMAIJI_SOURCE_CREDENTIALS_FILE", "")
+    if not configured or not Path(configured).is_absolute():
+        raise ExportError("源站会话已过期，但未配置独立登录凭据文件")
+    descriptor = None
+    try:
+        descriptor = os.open(configured, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        metadata = os.fstat(descriptor)
+        if (not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600
+                or metadata.st_uid != os.getuid() or metadata.st_size > 16_384):
+            raise ValueError("invalid private file")
+        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+            descriptor = None
+            payload = json.loads(stream.read(16_385))
+        if (not isinstance(payload, dict) or set(payload) != {"username", "password"}
+                or any(not isinstance(payload[key], str) or not payload[key]
+                       or "\x00" in payload[key] or len(payload[key]) > 1024
+                       for key in ("username", "password"))):
+            raise ValueError("invalid credential fields")
+        return payload["username"], payload["password"]
+    except (OSError, ValueError, UnicodeError):
+        raise ExportError("源站凭据文件无效：须属于当前用户、权限 600 且包含合法 username/password") from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _format_date(value: dt.datetime, spec: dict[str, Any]) -> str:
@@ -372,7 +425,10 @@ def _browser_options(config: dict[str, Any]) -> dict[str, Any]:
     options = config.get("browser") or {}
     if not isinstance(options, dict) or options.get("mode", "fresh") not in {"fresh", "cdp"}:
         raise ExportError("browser.mode 必须是 fresh 或 cdp")
-    return options
+    result = dict(options)
+    if options.get("refresh_login") is True:
+        result["login"] = config.get("login") or {}
+    return result
 
 
 def validate_cdp_url(value: Any) -> str:
@@ -417,6 +473,10 @@ def _validate_browser(config: dict[str, Any]) -> None:
         _cdp_start_url(options)
         if not _as_list(options.get("session_success_selectors")):
             raise ExportError("CDP 模式必须配置已核实的 session_success_selectors")
+        if options.get("refresh_login") is True:
+            _validate_login(options.get("login") or {})
+            if options.get("base_url") != "https://fanmaiji.top":
+                raise ExportError("自动登录续期仅支持已核实的 https://fanmaiji.top 源站")
 
 
 def _query_response_matches(
@@ -522,6 +582,44 @@ class _OwnedPages:
         self.root_page._fanmaiji_owned_pages = None
 
 
+def _initialize_cdp_session(page: Any, options: dict[str, Any], start_url: str) -> None:
+    """Finish the initial sales response and its DOM render before using the page."""
+    initial_path = options.get("initial_response_path")
+    try:
+        if initial_path:
+            with page.expect_response(
+                lambda response: _query_response_matches(response, initial_path),
+                timeout=DEFAULT_TIMEOUT_MS,
+            ) as initial_query:
+                page.goto(start_url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
+            initial_total = _query_response_total(initial_query.value)
+            _wait_pagination_total(page, initial_total)
+        else:
+            page.goto(start_url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
+    except Exception:
+        raise ExportError("A 机现有 Chrome 会话可能已过期或初始销售查询未成功，请检查现有登录会话") from None
+    if _wait_first_locator(page, options.get("session_success_selectors")) is None:
+        raise ExportError("A 机现有 Chrome 会话已过期或未登录；请在 A 机 Chrome 恢复登录后重试")
+
+
+def _refresh_expired_cdp_session(page: Any, options: dict[str, Any], start_url: str) -> bool:
+    """One normal login on the owned A-Chrome page, only on a proven login redirect."""
+    if options.get("refresh_login") is not True:
+        return False
+    login = options.get("login") or {}
+    base_url = str(options.get("base_url", "https://fanmaiji.top"))
+    if not _verified_login_page(page, base_url, login):
+        return False
+    _validate_login(login)
+    if base_url != "https://fanmaiji.top":
+        raise ExportError("自动登录续期仅支持已核实的 https://fanmaiji.top 源站")
+    _check_login_obstacles(page, login, check_error=False)
+    username, password = _source_credentials()
+    LOGGER.info("现有 Chrome 专用页确认跳转登录页，执行一次已核实的正常登录续期")
+    _login(page, base_url, login, username, password)
+    return True
+
+
 @contextlib.contextmanager
 def _browser_page(pw: Any, options: dict[str, Any], *, probe: bool = False) -> Iterator[Any]:
     """Own only a new page when attached to the user's existing Chrome."""
@@ -546,22 +644,13 @@ def _browser_page(pw: Any, options: dict[str, Any], *, probe: bool = False) -> I
         try:
             owned_page = context.new_page()
             owned_pages = _OwnedPages(owned_page)
-            initial_path = options.get("initial_response_path")
-            if initial_path:
-                try:
-                    with owned_page.expect_response(
-                        lambda response: _query_response_matches(response, initial_path),
-                        timeout=DEFAULT_TIMEOUT_MS,
-                    ) as initial_query:
-                        owned_page.goto(start_url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
-                    initial_total = _query_response_total(initial_query.value)
-                    _wait_pagination_total(owned_page, initial_total)
-                except Exception as exc:
-                    raise ExportError("A 机现有 Chrome 会话可能已过期或初始销售查询未成功，请检查现有登录会话") from exc
-            else:
-                owned_page.goto(start_url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
-            if _wait_first_locator(owned_page, options.get("session_success_selectors")) is None:
-                raise ExportError("A 机现有 Chrome 会话已过期或未登录；请在 A 机 Chrome 恢复登录后重试")
+            try:
+                _initialize_cdp_session(owned_page, options, start_url)
+            except ExportError:
+                if not _refresh_expired_cdp_session(owned_page, options, start_url):
+                    raise
+                # This second initialization is outside the catch: no login loop.
+                _initialize_cdp_session(owned_page, options, start_url)
             LOGGER.info("复用现有 Chrome 已登录会话")
             yield owned_page
         finally:

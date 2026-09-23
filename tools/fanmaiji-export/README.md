@@ -14,7 +14,7 @@
 - 凭据文件：运行目录的 `vend-credentials.json`，包含 `base_url`、`username`、`password`，必须为当前用户所有且权限 600。密码不进 Git、命令参数或日志；不要把这个文件复制到仓库。
 - LaunchAgent：`/Users/yh-1/Library/LaunchAgents/com.aole.fanmaiji-export.plist`；`StartCalendarInterval` 为 7:00，`RunAtLoad=false`。
 
-A 机 Chrome 需保持运行、9222 可连接且售货机登录有效。源站登录失效时任务明确失败，不另开空白浏览器。原有财务任务同在 07:00，售货机使用独立运行目录和专用任务页。
+A 机 Chrome 需保持运行、9222 可连接。若专用任务页确实跳转到同源 `/login` 且已核实表单可见，会用运行目录的 `fanmaiji-credentials.json` 正常登录一次，再重新校验销售查询；该文件只含 `username`、`password`，权限必须为 600 且属于当前用户，通过 `FANMAIJI_SOURCE_CREDENTIALS_FILE` 传路径。不会因普通网络失败循环登录；如出现验证码或登录错误则明确停止，不自动处理验证码。原有财务任务同在 07:00，售货机使用独立运行目录和专用任务页。
 
 ## 入口及状态
 
@@ -50,4 +50,4 @@ A 机 Chrome 需保持运行、9222 可连接且售货机登录有效。源站�
 python3 -m unittest discover -s tools/fanmaiji-export -p 'test_*.py'
 ```
 
-后端 `ExcelParserTest` 覆盖真实 HSSF/XSSF；导入相关数据库回归使用本机独立测试库，不能指向生产。历史只导出阶段的验收见 [2026-09-23 记录](STATUS-2026-09-23.md)；最新运行以 A 机状态、日志及 vend 批次为准。
+本地及 A 机 101 项 Python 测试通过；独立临时 MySQL 下 40 项后端解析、导入及幂等回归通过。2026-09-23 已真实导入 9 月 22 日数据，批次 `IMP-20260923173830-C8C4`，338 行全部成功；重复运行复用批次 6，未增加销售记录或批次。17:44 已实测正常登录续期及重新查询成功。详情见 [2026-09-23 记录](STATUS-2026-09-23.md)；最新运行以 A 机状态、日志及 vend 批次为准。

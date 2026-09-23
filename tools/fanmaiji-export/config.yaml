@@ -5,13 +5,14 @@ browser:
   mode: cdp
   cdp_url: "http://127.0.0.1:9222"
   base_url: "https://fanmaiji.top"
+  refresh_login: true             # 仅确认跳转到同源 /login 后正常登录一次。
   start_url: "/runspace_pc/salesManager/deliveryList"
   initial_response_path: "/delivery-log/page"
   session_success_selectors:
     - 'input.el-range-input[placeholder="开始日期"]'
 
 login:
-  verified: false                 # 尚未完成真实登录验证；禁止自动执行。
+  verified: true                  # 2026-09-23 在 A 机 Chrome 正常登录核实。
   url_path: "/login"
   # 以下字段来自已查看的登录页；后台 JS 负责 RSA 密码处理。
   user_selectors:
@@ -28,8 +29,9 @@ login:
     - "input[name*='captcha' i]"
     - "input[placeholder*='验证码']"
     - ".captcha"
-  # 必须在联真后填写登录成功的唯一标记，缺失时拒绝执行。
-  success_selectors: []
+  # /index 页已核实的可见正向标记，异步等待后仍重做销售查询校验。
+  success_selectors:
+    - "header.main-header"
 
 exports:
   sales:            # 销售管理 → 出货明细(查询限当月+上月,导出支持一年)
