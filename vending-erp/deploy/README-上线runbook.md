@@ -36,7 +36,7 @@ A 机 launchd 任务 `com.yh1.auto-deploy` 每 300 秒跑一次 `deploy.sh deplo
 2. PR 合进 `main`（一功能一分支一 PR）。
 3. 等：最多 5 分钟被拾取，再加 maven + vite 构建几分钟。看进度和构建报错只有一个地方：A 机 `~/系统开发/运维监控/deploy/logs/deploy-<日期>.log` 里找 `部署 vend`（失败也会推 Bark，`deploy/deploy-state.json` 的 `lastError` 存最后一次失败原因）。`ops logs vend` 看的是**容器运行日志**，构建报错不在里面。
 4. 验：
-   - `ops status vend` 三个容器 Up；`curl -s http://127.0.0.1:8089/api/v1/health` 返回 code 200。deploy.sh 自己只探 nginx 首页 `http://127.0.0.1:8089/`，后端起不来（典型：合了一条坏 migration，Flyway 启动即炸）它照样报「部署完成」，所以 health 要自己 curl；
+   - `ops status vend` 三个容器 Up，`vend-web` 为 healthy；`curl -s http://127.0.0.1:8089/api/v1/health` 返回 code 200 和 `vending-erp backend alive`。前端容器 healthcheck 经 Nginx 访问后端，不能用首页 200 代替 API 验活；
    - 浏览器开 `https://vend.vvaix.com`，**侧栏底部「版本 xxxxxxx」= 刚合并的提交号**（ops-monitoring #66 起，deploy.sh 构建时自动注入 `GIT_SHA/GIT_DATE/GIT_BRANCH`；显示 `unknown` = 这份镜像不是经 deploy.sh 构建出来的）；
    - 改了前端却看不到新界面：刷新一次再查版本号。nginx 对 `index.html` 是 `no-store`，正常刷新就会拿到新 hash 的 js，不需要清缓存。
 
@@ -55,6 +55,10 @@ A 机 launchd 任务 `com.yh1.auto-deploy` 每 300 秒跑一次 `deploy.sh deplo
 - 🔴 **没有一键回滚**：出事只能 `git revert` 再 push，再等一次拾取 + 构建；`ops rollback vend` 只能退镜像到上一版 `:prev-vending`，**schema 改动退不回来**，谨慎度按此定。
 
 ## 手工重建（只在需要时）
+
+前端 Nginx 使用 Docker DNS `127.0.0.11`，缓存有效期 5 秒。后端容器重建、IP 改变后会自动重新解析，无须手工重启前端；`/api/` 的完整路径及查询参数保持原样。短暂重建期间仍可能返回 502，应在后端就绪后复核 `/api/v1/health`，并确认匿名 `/api/auth/me` 返回业务 code 401。不要只检查静态首页。
+
+在开发机运行 `python3 vending-erp/deploy/tests/nginx-dns-regression.py` 可复现后端换 IP、路径/查询参数和请求体透传、API 断路时的容器健康检查；测试只使用独立 Docker 网络和模拟后端，不连接生产数据库。
 
 ```bash
 ops deploy vend              # 走同一套 deploy.sh：拉 main + build + up + 探活，版本号自动注入
