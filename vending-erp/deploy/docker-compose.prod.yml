@@ -75,6 +75,13 @@ services:
     container_name: vend-web
     restart: unless-stopped
     depends_on: [vend-server]
+    healthcheck:
+      # 从网页代理访问后端；首页 200 不能证明登录/API 可用。
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/api/v1/health | grep -Fq '\"data\":\"vending-erp backend alive\"'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     networks: [vendnet, vend-edge]   # vend-edge = 与 central-caddy 共享,供反代
 
 networks:
