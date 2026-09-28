@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElNotification } from 'element-plus'
 import DataFreshnessBar from '@/components/DataFreshnessBar.vue'
 import TourOverlay from '@/components/TourOverlay.vue'
+import { importsApi, type ImportBatch } from '@/api/imports'
 import { useTour } from '@/composables/useTour'
 import { isOffline, pendingTasks, replayQueue, replaying } from '@/utils/offline-queue'
 import { clearSession } from '@/utils/session'
@@ -97,8 +99,65 @@ const versionTitle = `分支 ${gitBranch || '?'} · 提交时间 ${gitDate || '?
 
 /** 逐页浮层引导:首次进系统自动开一次;右下角「?」随时打开指引 */
 const { autoStartOnce } = useTour()
-onMounted(() => setTimeout(autoStartOnce, 600))
+onMounted(() => {
+  setTimeout(autoStartOnce, 600)
+  // 用户整天开着系统时，也能在定时任务完成后收到一次回执。
+  window.setInterval(() => {
+    if (!route.meta.public) void checkCrawlerImportNotice()
+  }, 5 * 60 * 1000)
+})
 const openGuide = () => router.push('/guide')
+
+/**
+ * 每日爬虫导入回执：只认自动任务生成的 fanmaiji 文件名，避免把手工导入
+ * 误报成“今日爬虫已完成”。同一批次只提示一次，提示点击后可直达导入中心。
+ */
+const crawlerNoticeKey = 'vend_crawler_import_notice'
+let crawlerNoticeInFlight = false
+
+function isCrawlerBatch(batch: ImportBatch | null): batch is ImportBatch {
+  return !!batch && batch.fileName.startsWith('fanmaiji-sales-') && batch.batchStatus === '已导入'
+}
+
+async function checkCrawlerImportNotice() {
+  if (crawlerNoticeInFlight || !localStorage.getItem('vend_token')) return
+  crawlerNoticeInFlight = true
+  try {
+    const page = await importsApi.batches(1, 10, '出货明细')
+    const batch = page.records.find(isCrawlerBatch)
+    if (!batch) return
+    const noticeKey = `${crawlerNoticeKey}:${batch.id}`
+    if (localStorage.getItem(crawlerNoticeKey) === noticeKey) return
+
+    const issue = batch.rowFail > 0
+      ? `失败 ${batch.rowFail} 条，请到导入中心处理`
+      : batch.rowDup > 0
+        ? `重复跳过 ${batch.rowDup} 条`
+        : '全部明细已写入'
+    const businessDate = batch.fileName.match(/fanmaiji-sales-(\d{4}-\d{2}-\d{2})-/)?.[1]
+    ElNotification({
+      title: '每日爬虫数据已导入',
+      message: `业务日期 ${businessDate ?? batch.periodRange ?? '—'} · ${issue}。已导入 ${batch.rowOk} 条销售记录，库存推算和经营报表已同步。点击查看导入批次。`,
+      type: batch.rowFail > 0 ? 'warning' : 'success',
+      duration: 0,
+      position: 'top-right',
+      onClick: () => router.push('/import'),
+    })
+    localStorage.setItem(crawlerNoticeKey, noticeKey)
+  } catch {
+    // 通知属于辅助信息，接口失败不影响主应用和已有页面加载。
+  } finally {
+    crawlerNoticeInFlight = false
+  }
+}
+
+watch(
+  () => `${route.fullPath}:${route.meta.public ? 'public' : 'private'}`,
+  (current, previous) => {
+    if (current !== previous && !route.meta.public) void checkCrawlerImportNotice()
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
