@@ -107,6 +107,19 @@ export interface ImportError {
   resolveStatus: string
 }
 
+/** 原始归档表格：按 Excel 列位置展示，保留空列、重复表头和原始行号。 */
+export interface ImportFilePreview {
+  fileName: string
+  sheets: { index: number; name: string }[]
+  sheetIndex: number
+  columns: string[]
+  rows: { rowNo: number; cells: string[] }[]
+  total: number
+  current: number
+  size: number
+  warnings?: string[]
+}
+
 export interface PriceChange {
   productId: number
   skuCode: string
@@ -261,6 +274,15 @@ export const importsApi = {
   },
   batches(current = 1, size = 20, fileType?: string): Promise<PageResult<ImportBatch>> {
     return request.get('/v1/imports/batches', { params: { current, size, fileType } })
+  },
+  filePreview(batchId: number, sheetIndex = 0, current = 1, size = 50): Promise<ImportFilePreview> {
+    return request.get(`/v1/imports/batches/${batchId}/file-preview`, {
+      params: { sheetIndex, current, size },
+      timeout: 60000,
+    })
+  },
+  downloadFile(batchId: number): Promise<Blob> {
+    return request.get(`/v1/imports/batches/${batchId}/file`, { responseType: 'blob', timeout: 60000 })
   },
   deleteBatch(batchId: number): Promise<void> {
     return request.delete(`/v1/imports/batches/${batchId}`, { headers: operatorHeader() })
