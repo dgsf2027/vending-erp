@@ -19,6 +19,7 @@ import {
   type ValidateResp,
 } from '@/api/imports'
 import AliasPendingDrawer from '@/components/basedata/AliasPendingDrawer.vue'
+import ImportFileDrawer from '@/components/imports/ImportFileDrawer.vue'
 import LlmTransparencyBadge from '@/components/ai/LlmTransparencyBadge.vue'
 import { isMobile } from '@/utils/viewport'
 
@@ -154,6 +155,40 @@ const batchTotal = ref(0)
 const batchPage = ref(1)
 const batchLoading = ref(false)
 const deletingBatchId = ref<number | null>(null)
+const batchActionBusy = ref<number | null>(null)
+const fileVisible = ref(false)
+const fileBatch = ref<ImportBatch | null>(null)
+
+function openFile(row: ImportBatch) {
+  fileBatch.value = row
+  fileVisible.value = true
+}
+
+type BatchAction = 'errors' | 'fix' | 'prices' | 'reprocess' | 'rollback' | 'delete'
+
+function canRollback(row: ImportBatch) {
+  return row.batchStatus === '已导入' && row.fileType !== '商品列表'
+}
+
+async function handleBatchAction(action: BatchAction, row: ImportBatch) {
+  if (batchActionBusy.value !== null || row.batchStatus === '处理中') return
+  batchActionBusy.value = row.id
+  try {
+    switch (action) {
+      case 'errors': await openErrors(row); break
+      case 'fix': await openFixRows(row); break
+      case 'prices': await openPriceDialog(row.id); break
+      case 'reprocess': await doReprocess(row); break
+      case 'rollback': await doRollback(row); break
+      case 'delete': await doDeleteBatch(row); break
+    }
+  } catch (error) {
+    // 取消确认无需报错；接口错误已由统一拦截器提示。
+    if (error !== 'cancel' && error !== 'close') console.error('批次操作失败', error)
+  } finally {
+    batchActionBusy.value = null
+  }
+}
 
 async function loadBatches() {
   batchLoading.value = true
@@ -516,7 +551,20 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
           </template>
         </el-table-column>
         <el-table-column prop="fileType" label="类型" width="110" />
-        <el-table-column prop="fileName" label="文件" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="fileName" label="文件（点击查看）" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">
+            <el-button
+              link
+              type="primary"
+              class="import-file-link"
+              :disabled="row.batchStatus === '处理中'"
+              :aria-label="`查看表格：${row.fileName}`"
+              @click="openFile(row)"
+            >
+              <span class="import-file-name">{{ row.fileName }}</span>
+            </el-button>
+          </template>
+        </el-table-column>
         <el-table-column prop="periodRange" label="数据区间" width="130" />
         <el-table-column label="行数(总/成/败/重)" width="150">
           <template #default="{ row }">
@@ -534,47 +582,56 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
           </template>
         </el-table-column>
         <el-table-column prop="createTime" label="导入时间" width="150" />
-        <el-table-column label="操作" width="350" :fixed="isMobile ? false : 'right'">
+        <el-table-column label="操作" :width="isMobile ? 112 : 210" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="openErrors(row)">错误明细</el-button>
-            <el-button
-              v-if="row.rowFail > 0"
-              link
-              type="warning"
-              size="small"
-              @click="openFixRows(row)"
-            >
-              修改重导
-            </el-button>
-            <el-button link type="warning" size="small" @click="openPriceDialog(row.id)">改价清单</el-button>
-            <el-button
-              v-if="row.fileType === '出货明细' && row.batchStatus === '已导入'"
-              link
-              type="success"
-              size="small"
-              @click="doReprocess(row)"
-            >
-              重处理待绑定
-            </el-button>
-            <el-button
-              v-if="row.batchStatus === '已导入' && row.fileType !== '商品列表'"
-              link
-              type="danger"
-              size="small"
-              @click="doRollback(row)"
-            >
-              回滚
-            </el-button>
-            <el-button
-              link
-              type="danger"
-              size="small"
-              :loading="deletingBatchId === row.id"
-              :disabled="row.batchStatus === '处理中' || deletingBatchId !== null"
-              @click="doDeleteBatch(row)"
-            >
-              删除
-            </el-button>
+            <div class="batch-actions">
+              <el-button
+                link
+                type="primary"
+                size="small"
+                class="batch-view-button"
+                :disabled="row.batchStatus === '处理中'"
+                :aria-label="`查看表格，批次 ${row.batchNo}`"
+                @click="openFile(row)"
+              >查看表格</el-button>
+              <el-dropdown
+                trigger="click"
+                placement="bottom-end"
+                popper-class="batch-actions-menu"
+                :disabled="row.batchStatus === '处理中' || batchActionBusy !== null"
+                @command="handleBatchAction($event, row)"
+              >
+                <el-button
+                  size="small"
+                  class="batch-more-button"
+                  :aria-label="`更多操作，批次 ${row.batchNo}`"
+                  :loading="batchActionBusy === row.id"
+                  :disabled="row.batchStatus === '处理中' || batchActionBusy !== null"
+                >
+                  {{ row.batchStatus === '处理中' ? '处理中' : '更多操作' }}
+                  <svg v-if="batchActionBusy !== row.id" class="batch-action-chevron" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="errors">错误明细</el-dropdown-item>
+                    <el-dropdown-item v-if="row.rowFail > 0" command="fix">修改失败行并重导</el-dropdown-item>
+                    <el-dropdown-item command="prices">改价清单</el-dropdown-item>
+                    <el-dropdown-item
+                      v-if="row.fileType === '出货明细' && row.batchStatus === '已导入'"
+                      command="reprocess"
+                    >重处理待绑定</el-dropdown-item>
+                    <el-dropdown-item v-if="canRollback(row)" command="rollback" divided class="batch-danger-action">
+                      回滚导入数据
+                    </el-dropdown-item>
+                    <el-dropdown-item command="delete" :divided="!canRollback(row)" class="batch-danger-action">
+                      删除批次历史
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -587,6 +644,8 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
         @current-change="loadBatches"
       />
     </el-card>
+
+    <ImportFileDrawer v-model="fileVisible" :batch="fileBatch" />
 
     <!-- 预览确认对话框(两步式第②步) -->
     <el-dialog v-model="previewVisible" :title="`预览核对 · ${preview?.fileName ?? ''}`" width="860px" top="4vh">
@@ -935,3 +994,46 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.batch-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.batch-view-button, .batch-more-button { min-height: 32px; }
+.batch-action-chevron { width: 14px; height: 14px; margin-left: 4px; }
+:global(.batch-actions-menu .el-dropdown-menu__item) { min-height: 40px; font-size: 14px; }
+:global(.batch-actions-menu .batch-danger-action) { color: var(--red); }
+:global(.batch-actions-menu .batch-danger-action:not(.is-disabled):focus),
+:global(.batch-actions-menu .batch-danger-action:not(.is-disabled):hover) {
+  color: var(--red);
+  background-color: var(--red-soft);
+}
+
+@media (max-width: 768px) {
+  .batch-actions { flex-direction: column; align-items: stretch; gap: 0; }
+  .batch-view-button, .batch-more-button { min-height: 40px; width: 100%; }
+  :global(.batch-actions-menu .el-dropdown-menu__item) { min-height: 44px; }
+}
+
+.import-file-link {
+  max-width: 100%;
+  min-height: 28px;
+  text-align: left;
+}
+
+.import-file-link :deep(> span) {
+  min-width: 0;
+}
+
+.import-file-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+</style>

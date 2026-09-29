@@ -4,6 +4,12 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
 import lombok.RequiredArgsConstructor;
+import org.springframework.core.io.InputStreamResource;
+import org.springframework.core.io.Resource;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import top.aole.vend.common.exception.BizException;
@@ -14,9 +20,13 @@ import top.aole.vend.modules.imports.domain.entity.ImportBatch;
 import top.aole.vend.modules.imports.domain.entity.ImportError;
 import top.aole.vend.modules.imports.service.ImportService;
 import top.aole.vend.modules.imports.service.ImportFixService;
+import top.aole.vend.modules.imports.service.ImportArchiveService;
 
 import javax.validation.Valid;
+import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.List;
 
 /**
@@ -30,6 +40,7 @@ public class ImportController {
 
     private final ImportService importService;
     private final ImportFixService importFixService;
+    private final ImportArchiveService importArchiveService;
 
     @ApiOperation("导入自愈:AI 猜列映射(厂家改模板→期望列对到实际表头)")
     @PostMapping("/fix/suggest")
@@ -84,6 +95,35 @@ public class ImportController {
                                         @RequestParam(defaultValue = "20") long size,
                                         @RequestParam(required = false) String fileType) {
         return R.ok(importService.pageBatches(current, size, fileType));
+    }
+
+    @ApiOperation("查看批次归档原表(按工作表、原始行号分页)")
+    @GetMapping("/batches/{id}/file-preview")
+    public R<ImportDtos.FilePreviewResp> filePreview(@PathVariable Long id,
+                                                    @RequestParam(defaultValue = "0") int sheetIndex,
+                                                    @RequestParam(defaultValue = "1") long current,
+                                                    @RequestParam(defaultValue = "50") int size,
+                                                    HttpServletResponse response) {
+        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
+        return R.ok(importArchiveService.preview(id, sheetIndex, current, size));
+    }
+
+    @ApiOperation("下载批次归档原文件")
+    @GetMapping("/batches/{id}/file")
+    public ResponseEntity<Resource> file(@PathVariable Long id) {
+        ImportArchiveService.ArchivedFile archive = importArchiveService.file(id);
+        try {
+            Resource resource = new InputStreamResource(Files.newInputStream(archive.getPath()));
+            return ResponseEntity.ok()
+                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                    .contentLength(archive.getSize())
+                    .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                    .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                            .filename(archive.getFileName(), StandardCharsets.UTF_8).build().toString())
+                    .body(resource);
+        } catch (IOException e) {
+            throw new BizException("原始文件暂时无法读取，请稍后重试");
+        }
     }
 
     @ApiOperation("删除批次历史(保留已导入数据及来源记录)")

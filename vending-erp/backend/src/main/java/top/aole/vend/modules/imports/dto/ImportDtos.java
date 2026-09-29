@@ -18,6 +18,34 @@ public final class ImportDtos {
     private ImportDtos() {
     }
 
+    /** 已归档原表预览:按 Excel 行号/列位置展示,不套用导入映射。 */
+    @Data
+    public static class FilePreviewResp {
+        private String fileName;
+        private List<FileSheet> sheets = new ArrayList<>();
+        private int sheetIndex;
+        /** Excel 列字母;原文件中的重复/空白表头仍在 rows 中保留。 */
+        private List<String> columns = new ArrayList<>();
+        private int columnTotal;
+        private List<FileRow> rows = new ArrayList<>();
+        private long total;
+        private long current;
+        private int size;
+        private List<String> warnings = new ArrayList<>();
+    }
+
+    @Data
+    public static class FileSheet {
+        private final int index;
+        private final String name;
+    }
+
+    @Data
+    public static class FileRow {
+        private final int rowNo;
+        private final List<String> cells;
+    }
+
     /** 上传解析结果:预览 + 列映射校验(两步式第①步,未入账) */
     @Data
     public static class PreviewResp {
