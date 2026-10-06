@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   changeProductStatus,
+  deleteProduct,
   pageAliasPending,
   pageProducts,
   type Product,
@@ -45,6 +46,7 @@ const aliasVisible = ref(false)
 const aliasProduct = ref<Product | null>(null)
 const pendingVisible = ref(false)
 const importVisible = ref(false)
+const deletingId = ref<number | null>(null)
 
 function changeSort({ prop, order }: { prop: string; order: string | null }) {
   query.sortBy = (order ? prop : 'profit') as typeof query.sortBy
@@ -109,6 +111,35 @@ async function flip(row: Product, target: string) {
   await changeProductStatus(row.id!, target)
   ElMessage.success(`已置为「${target}」(op_log 已留痕)`)
   load()
+}
+
+async function removeProduct(row: Product) {
+  const confirmed = await ElMessageBox.confirm(
+    `确认删除「${row.productName}」(${row.skuCode})？仅未被业务使用的商品可删除，相关别名一并移除。删除后无法在页面恢复，但会保留操作日志；已有业务记录或配置关联时会拒绝删除。`,
+    '删除商品', { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' },
+  ).then(() => true, () => false)
+  if (!confirmed) return
+  deletingId.value = row.id!
+  try {
+    await deleteProduct(row.id!)
+    ElMessage.success('商品已删除，操作日志已保留')
+    if (rows.value.length === 1 && query.current > 1) query.current--
+    await load()
+  } finally {
+    deletingId.value = null
+  }
+}
+
+async function handleAction(command: string, row: Product) {
+  if (command === 'edit') openEdit(row)
+  else if (command === 'alias') openAlias(row)
+  else if (command === 'detail') await router.push(`/products/${row.id}`)
+  else if (command === 'delete') await removeProduct(row)
+  else if (['在售', '清仓中', '停售'].includes(command)) {
+    try { await flip(row, command) } catch (error) {
+      if (error !== 'cancel' && error !== 'close') throw error
+    }
+  }
 }
 
 function statusChip(status?: string) {
@@ -192,14 +223,24 @@ defineExpose({ reload: load })
             <span class="chip" :class="statusChip(row.productStatus)">{{ row.productStatus }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="170">
+        <el-table-column label="操作" width="100" align="center">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
-            <el-button link size="small" @click="openAlias(row)">别名</el-button>
-            <el-button v-if="row.productStatus === '在售'" link type="warning" size="small" @click="flip(row, '清仓中')">清仓</el-button>
-            <el-button v-if="row.productStatus !== '停售'" link type="danger" size="small" @click="flip(row, '停售')">停售</el-button>
-            <el-button v-if="row.productStatus !== '在售'" link type="success" size="small" @click="flip(row, '在售')">恢复</el-button>
-            <el-button link type="success" size="small" @click="router.push(`/products/${row.id}`)">详情 ▸</el-button>
+            <el-dropdown trigger="click" @command="(command: string) => handleAction(command, row)">
+              <el-button size="small" :disabled="deletingId === row.id" :aria-label="`${row.productName}的操作`">
+                {{ deletingId === row.id ? '删除中…' : '操作 ▾' }}
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="edit">编辑商品</el-dropdown-item>
+                  <el-dropdown-item command="alias">管理别名</el-dropdown-item>
+                  <el-dropdown-item command="detail">查看详情</el-dropdown-item>
+                  <el-dropdown-item v-if="row.productStatus === '在售'" command="清仓中" divided>转为清仓</el-dropdown-item>
+                  <el-dropdown-item v-if="row.productStatus !== '停售'" command="停售" :divided="row.productStatus !== '在售'">停售商品</el-dropdown-item>
+                  <el-dropdown-item v-if="row.productStatus !== '在售'" command="在售">恢复在售</el-dropdown-item>
+                  <el-dropdown-item command="delete" divided class="delete-action">删除商品</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </template>
         </el-table-column>
       </el-table>
@@ -225,6 +266,7 @@ defineExpose({ reload: load })
 </template>
 
 <style scoped>
+.delete-action { color: var(--el-color-danger); }
 :deep(.el-table__header .cell) {
   white-space: nowrap;
   font-size: 12px;
