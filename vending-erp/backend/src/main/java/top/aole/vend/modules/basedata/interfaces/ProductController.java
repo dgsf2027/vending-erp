@@ -42,8 +42,10 @@ public class ProductController {
                                  @RequestParam(defaultValue = "20") long size,
                                  @RequestParam(required = false) String keyword,
                                  @RequestParam(required = false) String category,
-                                 @RequestParam(required = false) String productStatus) {
-        return R.ok(productService.page(current, size, keyword, category, productStatus));
+                                 @RequestParam(required = false) String productStatus,
+                                 @RequestParam(defaultValue = "skuCode") String sortBy,
+                                 @RequestParam(defaultValue = "asc") String sortOrder) {
+        return R.ok(productService.page(current, size, keyword, category, productStatus, sortBy, sortOrder));
     }
 
     @ApiOperation("详情")

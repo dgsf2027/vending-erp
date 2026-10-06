@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { productProfit } from '@/utils/product-profit'
 import { createProduct, updateProduct, type Product } from '@/api/basedata'
 
 /**
@@ -34,6 +35,7 @@ const blank = (): Product => ({
 })
 
 const form = reactive<Product>(blank())
+const profit = computed(() => productProfit(form.refPrice, form.refCost))
 const saving = ref(false)
 const isEdit = ref(false)
 
@@ -89,12 +91,12 @@ async function save() {
     <el-form label-width="110px">
       <el-row :gutter="12">
         <el-col :span="12">
-          <el-form-item label="SKU 编码" required>
+          <el-form-item label="商品编号" required>
             <el-input v-model="form.skuCode" :disabled="isEdit" placeholder="如 SP101" />
           </el-form-item>
         </el-col>
         <el-col :span="12">
-          <el-form-item label="商品名" required>
+          <el-form-item label="商品名称" required>
             <el-input v-model="form.productName" placeholder="采购商品名(主名称)" />
           </el-form-item>
         </el-col>
@@ -126,13 +128,18 @@ async function save() {
           </el-form-item>
         </el-col>
         <el-col :span="8">
-          <el-form-item label="参考成本 ¥">
-            <el-input v-model="form.refCost" type="number" min="0" step="0.1" placeholder="0.00" style="width: 100%" />
+          <el-form-item label="商品售价(元)">
+            <el-input v-model="form.refPrice" type="number" min="0" step="0.01" placeholder="0.00" />
           </el-form-item>
         </el-col>
         <el-col :span="8">
-          <el-form-item label="参考售价 ¥">
-            <el-input v-model="form.refPrice" type="number" min="0" step="0.1" placeholder="0.00" style="width: 100%" />
+          <el-form-item label="拿货价(元)">
+            <el-input v-model="form.refCost" type="number" min="0" step="0.01" placeholder="0.00" />
+          </el-form-item>
+        </el-col>
+        <el-col :span="8">
+          <el-form-item label="利润(元/件)">
+            <el-input :model-value="profit?.toFixed(2) ?? '—'" readonly />
           </el-form-item>
         </el-col>
         <el-col :span="8">
@@ -147,7 +154,7 @@ async function save() {
         </el-col>
       </el-row>
       <p class="mini" style="margin: 0 0 0 110px">
-        售价仅为<b>参考价</b>,真实毛利按后台实收算;无采购史时成本用参考成本兜底,毛利显示「—」。
+        利润自动按售价减拿货价计算,填齐两个价格后显示。档案价格用于参考,真实销售毛利按后台实收与加权成本计算。
       </p>
     </el-form>
     <template #footer>

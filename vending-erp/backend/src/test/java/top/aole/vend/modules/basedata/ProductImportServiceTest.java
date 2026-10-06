@@ -269,6 +269,43 @@ class ProductImportServiceTest {
         assertEquals("SP902", resp.getErrors().get(0).getSkuCode());
     }
 
+    @Test
+    void 利润五列表可解析并更新已有商品价格_保留缺席字段() {
+        Product existing = new Product();
+        existing.setId(42L);
+        existing.setSkuCode("AT2608201342560000");
+        existing.setProductStatus("停售");
+        when(productMapper.selectList(any())).thenReturn(Collections.singletonList(existing));
+        byte[] content = xlsx(new String[]{"商品编号", "商品名称", "商品售价(元)", "拿货价(元)", "利润"},
+                new String[]{existing.getSkuCode(), "香辣牛肉桶面", "6.3", "3.24", "999"},
+                new String[]{"AT2608201341539000", "枸杞槟榔", "49.8", "44", "5.8"});
+        ProductImportDtos.ParseResp parsed = service.parse("商品列表_已填利润.xlsx", content);
+        assertEquals(0, parsed.getErrorCount());
+        assertEquals(1, parsed.getUpdateCount());
+        assertEquals(1, parsed.getCreateCount());
+        assertEquals("3.24", parsed.getRows().get(0).getRefCost());
+        assertEquals("6.3", parsed.getRows().get(0).getRefPrice());
+        ProductImportDtos.CommitResp committed = service.commit(parsed.getRows(), "单测");
+        assertEquals(0, committed.getFailed());
+        ArgumentCaptor<Product> patch = ArgumentCaptor.forClass(Product.class);
+        verify(productService).update(anyLong(), patch.capture(), anyString());
+        assertEquals(new BigDecimal("3.24"), patch.getValue().getRefCost());
+        assertEquals(new BigDecimal("6.3"), patch.getValue().getRefPrice());
+        assertNull(patch.getValue().getCategory());
+        assertNull(patch.getValue().getBarcode());
+        verify(productService, never()).changeStatus(anyLong(), anyString(), anyString());
+    }
+
+    @Test
+    void 全角货币表头和零拿货价可识别() {
+        ProductImportDtos.ParseResp parsed = service.parse("零成本.xlsx", xlsx(
+                new String[]{"商品编号", "商品名称", "商品售价（元）", "拿货价（元）", "利润"},
+                new String[]{"ZERO", "赠品", "1", "0", "1"}));
+        assertEquals(0, parsed.getErrorCount());
+        assertEquals("0", parsed.getRows().get(0).getRefCost());
+        assertEquals("1", parsed.getRows().get(0).getRefPrice());
+    }
+
     // ---------- 模板 ----------
 
     @Test
@@ -277,7 +314,7 @@ class ProductImportServiceTest {
 
         ParsedSheet sheet = new ExcelParser().parse(new ByteArrayInputStream(tpl));
         assertTrue(sheet.getHeaders().contains("商品编号*"), sheet.getHeaders().toString());
-        assertTrue(sheet.getHeaders().contains("参考售价"), sheet.getHeaders().toString());
+        assertTrue(sheet.getHeaders().contains("商品售价(元)"), sheet.getHeaders().toString());
         // 必填列带的 * 不能把解析绊倒
         ProductImportDtos.ParseResp resp = service.parse("商品导入模板.xlsx", tpl);
         assertEquals(2, resp.getRowTotal());

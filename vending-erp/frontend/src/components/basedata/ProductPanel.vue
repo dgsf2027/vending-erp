@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -8,17 +8,13 @@ import {
   pageProducts,
   type Product,
 } from '@/api/basedata'
+import { productProfit } from '@/utils/product-profit'
 import ProductFormDialog from './ProductFormDialog.vue'
 import ProductImportDialog from './ProductImportDialog.vue'
 import AliasManageDialog from './AliasManageDialog.vue'
 import AliasPendingDrawer from './AliasPendingDrawer.vue'
 
-/**
- * 商品档案面板(对照 mockup p3 列表部分):
- * 筛选 chip + 搜索 + 列表 + 新建/编辑/状态流转 + 别名管理 + 待绑队列。
- * 30 天销量/毛利率等经营数字属 M1-6 单品分析,此处显示占位「—」;行上留详情下钻钩子。
- * compact 模式给设置中心 Tab 用(隐藏下钻提示文案)。
- */
+/** 商品档案:按五列表展示价格与参考单件利润,在分页前进行服务端排序。 */
 const props = defineProps<{ compact?: boolean }>()
 const router = useRouter()
 
@@ -32,6 +28,8 @@ const query = reactive({
   size: 20,
   keyword: '',
   productStatus: '' as string,
+  sortBy: 'profit' as 'skuCode' | 'refPrice' | 'refCost' | 'profit',
+  sortOrder: 'desc' as 'asc' | 'desc',
 })
 
 const STATUS_CHIPS = [
@@ -48,12 +46,12 @@ const aliasProduct = ref<Product | null>(null)
 const pendingVisible = ref(false)
 const importVisible = ref(false)
 
-const grossMargin = computed(() => (p: Product) => {
-  const cost = Number(p.refCost)
-  const price = Number(p.refPrice)
-  if (!cost || !price || price <= 0) return null
-  return Math.round(((price - cost) / price) * 1000) / 10
-})
+function changeSort({ prop, order }: { prop: string; order: string | null }) {
+  query.sortBy = (order ? prop : 'profit') as typeof query.sortBy
+  query.sortOrder = order === 'ascending' ? 'asc' : 'desc'
+  query.current = 1
+  load()
+}
 
 async function load() {
   loading.value = true
@@ -63,6 +61,8 @@ async function load() {
       size: query.size,
       keyword: query.keyword || undefined,
       productStatus: query.productStatus || undefined,
+      sortBy: query.sortBy,
+      sortOrder: query.sortOrder,
     })
     rows.value = page.records
     total.value = page.total
@@ -157,45 +157,42 @@ defineExpose({ reload: load })
     </div>
 
     <div class="ledger-card" style="padding: 0; overflow: hidden">
-      <el-table :data="rows" v-loading="loading" @row-dblclick="openEdit">
-        <el-table-column prop="skuCode" label="编码" width="90">
+      <el-table :data="rows" v-loading="loading" :default-sort="{ prop: 'profit', order: 'descending' }" @sort-change="changeSort" @row-dblclick="openEdit">
+        <el-table-column prop="skuCode" label="商品编号" width="180" sortable="custom" :sort-orders="['descending', 'ascending']">
           <template #default="{ row }">
-            <span class="num mini">{{ row.skuCode }}</span>
+            <span class="num mini" style="white-space: nowrap">{{ row.skuCode }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="商品" min-width="180">
+        <el-table-column label="商品名称" min-width="180">
           <template #default="{ row }">
             <b class="name-link" @click="router.push(`/products/${row.id}`)">{{ row.productName }} ↗</b>
+            <span v-if="row.category" class="mini" style="display: block">{{ row.category }}</span>
             <span v-if="row.legacyCode" class="chip c-gray" style="margin-left: 6px">原码 {{ row.legacyCode }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="category" label="分类" width="80" />
-        <el-table-column label="参考成本" width="90" align="right">
-          <template #default="{ row }">
-            <span class="num">{{ row.refCost != null ? Number(row.refCost).toFixed(2) : '—' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="参考售价" width="90" align="right">
+        <el-table-column prop="refPrice" label="商品售价(元)" width="120" align="right" sortable="custom" :sort-orders="['descending', 'ascending']">
           <template #default="{ row }">
             <span class="num">{{ row.refPrice != null ? Number(row.refPrice).toFixed(2) : '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="参考毛利率" width="100" align="right">
+        <el-table-column prop="refCost" label="拿货价(元)" width="110" align="right" sortable="custom" :sort-orders="['descending', 'ascending']">
           <template #default="{ row }">
-            <span class="num">{{ grossMargin(row) != null ? grossMargin(row) + '%' : '—' }}</span>
+            <span class="num">{{ row.refCost != null ? Number(row.refCost).toFixed(2) : '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="30天销量" width="90" align="right">
-          <template #default>
-            <span class="mini">—</span>
+        <el-table-column prop="profit" label="利润(元/件)" width="120" align="right" sortable="custom" :sort-orders="['descending', 'ascending']">
+          <template #default="{ row }">
+            <span class="num" :style="{ color: (productProfit(row.refPrice, row.refCost) ?? 0) < 0 ? 'var(--red)' : 'var(--green)' }">
+              {{ productProfit(row.refPrice, row.refCost)?.toFixed(2) ?? '—' }}
+            </span>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="90">
+        <el-table-column label="状态" width="75">
           <template #default="{ row }">
             <span class="chip" :class="statusChip(row.productStatus)">{{ row.productStatus }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="230">
+        <el-table-column label="操作" width="170">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
             <el-button link size="small" @click="openAlias(row)">别名</el-button>
@@ -217,7 +214,7 @@ defineExpose({ reload: load })
       </div>
     </div>
     <p v-if="!props.compact" class="ledger-foot-note">
-      — 30天销量 / 动销标签 / 单品体检报告在 M1-6「单品分析」接入销售数据后点亮;当前先把档案与别名地基打牢 —
+      利润 = 商品售价 − 拿货价,默认按利润从高到低排列;点击金额列可切换排序。这里是档案参考单件利润,实际销售毛利请查看报表。
     </p>
 
     <ProductFormDialog v-model:visible="formVisible" :product="editing" @saved="load" />
@@ -226,3 +223,16 @@ defineExpose({ reload: load })
     <AliasPendingDrawer v-model:visible="pendingVisible" @changed="loadPendingCount(); load()" />
   </div>
 </template>
+
+<style scoped>
+:deep(.el-table__header .cell) {
+  white-space: nowrap;
+  font-size: 12px;
+}
+:deep(.el-table__header .caret-wrapper) {
+  width: 16px;
+}
+:deep(.el-table__header .sort-caret) {
+  left: 3px;
+}
+</style>

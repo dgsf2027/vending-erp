@@ -147,6 +147,8 @@ export function pageProducts(params: {
   keyword?: string
   category?: string
   productStatus?: string
+  sortBy?: 'skuCode' | 'refPrice' | 'refCost' | 'profit'
+  sortOrder?: 'asc' | 'desc'
 }): Promise<PageResult<Product>> {
   return request.get('/v1/basedata/products', { params })
 }

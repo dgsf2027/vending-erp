@@ -70,8 +70,8 @@ public class ProductImportService {
             {"基本单位", "单位"},
             {"箱规", "每箱数量", "装箱数"},
             {"保质期(天)", "保质期天数", "保质期"},
-            {"参考成本", "成本", "成本价", "进价", "采购单价"},
-            {"参考售价", "售价", "零售价", "销售价", "单价"},
+            {"参考成本", "成本", "成本价", "进价", "采购单价", "拿货价", "拿货价(元)"},
+            {"参考售价", "售价", "零售价", "销售价", "单价", "商品售价", "商品售价(元)"},
             {"机内上限", "机内上限建议", "货道容量"},
             {"状态", "商品状态", "销售状态"},
             {"备注", "说明"},
@@ -253,25 +253,34 @@ public class ProductImportService {
             head.setFillForegroundColor(IndexedColors.GREY_50_PERCENT.getIndex());
             head.setFillPattern(org.apache.poi.ss.usermodel.FillPatternType.SOLID_FOREGROUND);
 
+            String[] templateHeaders = {"商品编号*", "商品名称*", "商品售价(元)", "拿货价(元)", "利润",
+                    "商品条形码", "商品分类", "基本单位", "箱规", "保质期(天)", "机内上限", "状态", "备注"};
             org.apache.poi.ss.usermodel.Row header = sheet.createRow(0);
-            for (int i = 0; i < COLUMNS.length; i++) {
-                String name = COLUMNS[i][0] + (REQUIRED.contains(COLUMNS[i][0]) ? "*" : "");
+            for (int i = 0; i < templateHeaders.length; i++) {
+                String name = templateHeaders[i];
                 org.apache.poi.ss.usermodel.Cell cell = header.createCell(i);
                 cell.setCellValue(name);
                 cell.setCellStyle(head);
                 sheet.setColumnWidth(i, 14 * 256);
             }
-            // 列顺序必须与 COLUMNS 一一对应(倒数第二列 = 状态,留空即按「在售」建档)
+            // 前五列与售价/拿货价/利润表一致,利润由公式推导(倒数第二列 = 状态,留空即按「在售」建档)
             String[][] samples = {
-                    {"SP101", "东方树叶青柑普洱500ml", "6925303730642", "饮料", "瓶", "15", "365", "3.20", "5.00", "8", "在售", "示例行,导入前请删掉"},
-                    {"SP102", "康师傅红烧牛肉面", "6920152400111", "泡面", "袋", "24", "180", "2.60", "5.00", "6", "", ""},
+                    {"SP101", "东方树叶青柑普洱500ml", "5.00", "3.20", "", "6925303730642", "饮料", "瓶", "15", "365", "8", "在售", "示例行,导入前请删掉"},
+                    {"SP102", "康师傅红烧牛肉面", "5.00", "2.60", "", "6920152400111", "泡面", "袋", "24", "180", "6", "", ""},
             };
             for (int r = 0; r < samples.length; r++) {
                 org.apache.poi.ss.usermodel.Row row = sheet.createRow(r + 1);
-                for (int c = 0; c < samples[r].length && c < COLUMNS.length; c++) {
+                for (int c = 0; c < samples[r].length && c < templateHeaders.length; c++) {
                     row.createCell(c).setCellValue(samples[r][c]);
                 }
             }
+            for (int r = 1; r <= samples.length; r++) {
+                sheet.getRow(r).getCell(4).setCellFormula("C" + (r + 1) + "-D" + (r + 1));
+            }
+            wb.getCreationHelper().createFormulaEvaluator().evaluateAll();
+            sheet.createFreezePane(2, 1);
+            sheet.setColumnWidth(0, 24 * 256);
+            sheet.setColumnWidth(1, 32 * 256);
             wb.write(out);
             return out.toByteArray();
         } catch (IOException e) {
