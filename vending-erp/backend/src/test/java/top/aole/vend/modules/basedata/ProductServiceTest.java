@@ -117,4 +117,40 @@ class ProductServiceTest {
         assertThrows(BizException.class,
                 () -> productService.changeStatus(created.getId(), "已删除", "单测"));
     }
+    @Test
+    void profit_sort_is_global_before_paging_and_missing_prices_last() {
+        String[] codes = {"SORT-A", "SORT-B", "SORT-C", "SORT-D", "SORT-E"};
+        String[] prices = {"1.80", "6.30", "1.00", "1.00", null};
+        String[] costs = {"1.00", "3.24", "2.00", "0.00", "0.00"};
+        for (int i = 0; i < codes.length; i++) {
+            Product product = newProduct(P + codes[i]);
+            product.setRefPrice(prices[i] == null ? null : new BigDecimal(prices[i]));
+            product.setRefCost(new BigDecimal(costs[i]));
+            productService.create(product, "单测");
+        }
+        Page<Product> first = productService.page(1, 2, P + "SORT-", null, null, "profit", "desc");
+        assertEquals(5, first.getTotal());
+        assertEquals(P + "SORT-B", first.getRecords().get(0).getSkuCode());
+        assertEquals(P + "SORT-D", first.getRecords().get(1).getSkuCode());
+        Page<Product> second = productService.page(2, 2, P + "SORT-", null, null, "profit", "desc");
+        assertEquals(P + "SORT-A", second.getRecords().get(0).getSkuCode());
+        assertEquals(P + "SORT-C", second.getRecords().get(1).getSkuCode());
+        Page<Product> last = productService.page(3, 2, P + "SORT-", null, null, "profit", "desc");
+        assertEquals(P + "SORT-E", last.getRecords().get(0).getSkuCode());
+        Page<Product> ascending = productService.page(1, 10, P + "SORT-", null, null, "profit", "asc");
+        assertEquals(P + "SORT-C", ascending.getRecords().get(0).getSkuCode());
+        assertEquals(P + "SORT-E", ascending.getRecords().get(4).getSkuCode());
+        productService.changeStatus(first.getRecords().get(0).getId(), "停售", "单测");
+        assertEquals(P + "SORT-B", productService.page(1, 2, P + "SORT-", null, "停售", "profit", "desc")
+                .getRecords().get(0).getSkuCode());
+    }
+
+    @Test
+    void sort_rejects_untrusted_columns_and_directions() {
+        assertThrows(BizException.class, () -> productService.page(1, 2, null, null, null,
+                "ref_price; DELETE FROM yc_vend_product", "asc"));
+        assertThrows(BizException.class, () -> productService.page(1, 2, null, null, null,
+                "profit", "desc; --"));
+    }
+
 }

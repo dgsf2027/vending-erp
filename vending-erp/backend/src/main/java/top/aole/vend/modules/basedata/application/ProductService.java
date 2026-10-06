@@ -2,6 +2,7 @@ package top.aole.vend.modules.basedata.application;
 
 import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
@@ -35,15 +36,40 @@ public class ProductService {
 
     /** 分页列表:名称/编码/条码 关键字 + 分类 + 状态 筛选 */
     public Page<Product> page(long current, long size, String keyword, String category, String productStatus) {
-        LambdaQueryWrapper<Product> qw = new LambdaQueryWrapper<>();
+        return page(current, size, keyword, category, productStatus, "skuCode", "asc");
+    }
+
+    /** 排序先于分页,保证利润排序覆盖全部商品;排序字段只接受固定白名单。 */
+    public Page<Product> page(long current, long size, String keyword, String category, String productStatus,
+                              String sortBy, String sortOrder) {
+        QueryWrapper<Product> qw = new QueryWrapper<>();
         if (StrUtil.isNotBlank(keyword)) {
-            qw.and(w -> w.like(Product::getProductName, keyword)
-                    .or().like(Product::getSkuCode, keyword)
-                    .or().like(Product::getBarcode, keyword));
+            qw.and(w -> w.like("product_name", keyword)
+                    .or().like("sku_code", keyword)
+                    .or().like("barcode", keyword));
         }
-        qw.eq(StrUtil.isNotBlank(category), Product::getCategory, category)
-                .eq(StrUtil.isNotBlank(productStatus), Product::getProductStatus, productStatus)
-                .orderByAsc(Product::getSkuCode);
+        qw.eq(StrUtil.isNotBlank(category), "category", category)
+                .eq(StrUtil.isNotBlank(productStatus), "product_status", productStatus);
+        boolean ascending = "asc".equals(sortOrder);
+        if (!ascending && !"desc".equals(sortOrder)) {
+            throw new BizException("排序方向只允许 asc/desc");
+        }
+        String column;
+        switch (sortBy) {
+            case "skuCode": column = "sku_code"; break;
+            case "refPrice": column = "ref_price"; break;
+            case "refCost": column = "ref_cost"; break;
+            case "profit": column = "(ref_price - ref_cost)"; break;
+            default: throw new BizException("不支持的商品排序字段");
+        }
+        // 缺价格/成本的商品排在末尾,零成本有效,同利润按编号稳定排序。
+        if ("profit".equals(sortBy)) {
+            qw.orderByAsc("(ref_price IS NULL OR ref_cost IS NULL)");
+        } else if (!"skuCode".equals(sortBy)) {
+            qw.orderByAsc("(" + column + " IS NULL)");
+        }
+        qw.orderBy(true, ascending, column);
+        if (!"skuCode".equals(sortBy)) qw.orderByAsc("sku_code");
         return productMapper.selectPage(new Page<>(current, size), qw);
     }
 

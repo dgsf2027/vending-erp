@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { productProfit } from '@/utils/product-profit'
 import type { UploadFile } from 'element-plus'
 import {
   commitProductImport,
@@ -154,7 +155,8 @@ function actionChip(action?: string) {
   >
     <!-- ⚡ 任务来源 + 流程条(七律#2:要人干活的页面必须说清谁生成、干到第几步) -->
     <p class="mini" style="margin-top: 0">
-      来源:厂家后台「商品列表」导出,或按模板自己填。
+      支持「商品编号、商品名称、商品售价(元)、拿货价(元)、利润」五列表格,也兼容厂家导出和旧模板。
+      利润按售价减拿货价自动计算,无需手填。
       <b>①选文件(自动解析)→ ②在下面核对/改错 → ③确认入档</b>。
       编号已存在的走<b>更新</b>(表里给了值的字段才覆盖);建档同时把「后台编号+条码」绑成别名,
       待绑队列里对得上的会一起消掉。
@@ -219,11 +221,20 @@ function actionChip(action?: string) {
           <span v-else class="chip" :class="actionChip(row.action)">{{ row.action }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="商品编号 *" width="120">
+      <el-table-column label="商品编号 *" width="200">
         <template #default="{ row }"><el-input v-model="row.skuCode" size="small" /></template>
       </el-table-column>
       <el-table-column label="商品名称 *" min-width="190">
         <template #default="{ row }"><el-input v-model="row.productName" size="small" /></template>
+      </el-table-column>
+      <el-table-column label="商品售价(元)" width="130">
+        <template #default="{ row }"><el-input v-model="row.refPrice" size="small" type="number" min="0" step="0.01" /></template>
+      </el-table-column>
+      <el-table-column label="拿货价(元)" width="120">
+        <template #default="{ row }"><el-input v-model="row.refCost" size="small" type="number" min="0" step="0.01" /></template>
+      </el-table-column>
+      <el-table-column label="利润(元/件)" width="110" align="right">
+        <template #default="{ row }"><span class="num">{{ productProfit(row.refPrice, row.refCost)?.toFixed(2) ?? '—' }}</span></template>
       </el-table-column>
       <el-table-column label="条码" width="140">
         <template #default="{ row }"><el-input v-model="row.barcode" size="small" /></template>
@@ -239,12 +250,6 @@ function actionChip(action?: string) {
       </el-table-column>
       <el-table-column label="保质期(天)" width="96">
         <template #default="{ row }"><el-input v-model="row.shelfLifeDays" size="small" type="number" /></template>
-      </el-table-column>
-      <el-table-column label="参考成本" width="90">
-        <template #default="{ row }"><el-input v-model="row.refCost" size="small" type="number" /></template>
-      </el-table-column>
-      <el-table-column label="参考售价" width="90">
-        <template #default="{ row }"><el-input v-model="row.refPrice" size="small" type="number" /></template>
       </el-table-column>
       <el-table-column label="机内上限" width="90">
         <template #default="{ row }"><el-input v-model="row.minDisplayQty" size="small" type="number" /></template>
