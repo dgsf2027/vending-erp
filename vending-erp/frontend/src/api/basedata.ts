@@ -153,6 +153,11 @@ export function pageProducts(params: {
   return request.get('/v1/basedata/products', { params })
 }
 
+/** 只允许删除没有业务记录/配置引用的商品,服务端验证并留痕。 */
+export function deleteProduct(id: number): Promise<void> {
+  return request.delete(`/v1/basedata/products/${id}`, opHeaders())
+}
+
 export function getProduct(id: number): Promise<Product> {
   return request.get(`/v1/basedata/products/${id}`)
 }

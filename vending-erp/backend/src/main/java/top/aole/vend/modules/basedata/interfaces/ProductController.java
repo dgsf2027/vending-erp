@@ -14,6 +14,7 @@ import top.aole.vend.common.exception.BizException;
 import top.aole.vend.common.result.R;
 import top.aole.vend.modules.basedata.application.ProductImportService;
 import top.aole.vend.modules.basedata.application.ProductService;
+import top.aole.vend.modules.basedata.application.ProductDeletionService;
 import top.aole.vend.modules.basedata.domain.entity.Product;
 import top.aole.vend.modules.basedata.interfaces.dto.Dtos;
 import top.aole.vend.modules.basedata.interfaces.dto.ProductImportDtos;
@@ -25,7 +26,7 @@ import java.net.URLEncoder;
 
 /**
  * 商品档案接口。完整路径 /api/v1/basedata/products。
- * 铁律:停售≠删除,有流水的永不删——因此没有 DELETE 接口,只有状态流转。
+ * 有业务引用的商品不得删除;未使用的商品可删除并留操作审计。
  */
 @Api(tags = "基础档案 · 商品")
 @RestController
@@ -34,6 +35,7 @@ import java.net.URLEncoder;
 public class ProductController {
 
     private final ProductService productService;
+    private final ProductDeletionService productDeletionService;
     private final ProductImportService productImportService;
 
     @ApiOperation("分页列表(名称/编码/条码关键字 + 分类 + 状态)")
@@ -66,6 +68,14 @@ public class ProductController {
     public R<Product> update(@PathVariable Long id, @RequestBody Product product,
                              @RequestHeader(value = Operators.HEADER, required = false) String userName) {
         return R.ok(productService.update(id, product, Operators.resolve(userName)));
+    }
+
+    @ApiOperation("删除未使用商品(有业务记录或配置引用则拒绝,删除过程留审计)")
+    @DeleteMapping("/{id}")
+    public R<Void> delete(@PathVariable Long id,
+                          @RequestHeader(value = Operators.HEADER, required = false) String userName) {
+        productDeletionService.delete(id, Operators.resolve(userName));
+        return R.ok();
     }
 
     // ---------- 建档导入(设置中心 → 商品 → 导入商品列表) ----------
