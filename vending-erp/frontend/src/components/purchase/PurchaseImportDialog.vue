@@ -35,8 +35,8 @@ async function selectFile(event: Event) {
   error.value = ''
   if (!file) return
   fileName.value = file.name
-  if (!file.name.toLowerCase().endsWith('.xlsx') || file.size > 5 * 1024 * 1024 || !file.size) {
-    error.value = '请选择不超过 5MB 的非空 .xlsx 文件'
+  if (!/\.xlsx?$/i.test(file.name) || file.size > 5 * 1024 * 1024 || !file.size) {
+    error.value = '请选择不超过 5MB 的非空 .xls 或 .xlsx 文件'
     return
   }
   const requestGeneration = ++generation
@@ -85,12 +85,12 @@ function apply() {
         采购数量 = 整件规格 × 总件数，总价格 = 整件价格 × 总件数；系统会折算基本单位进货价。
       </template>
       <template v-else>使用商品档案编码填写订购数量和预计单价；预计单价可留空。</template>
-      仅支持一个工作表的 .xlsx，最多 500 行、5MB。上传只做校验和预览，不会改变库存。
+      支持一个工作表的 .xls 或 .xlsx，最多 500 行、5MB。上传只做校验和预览，不会改变库存。
     </el-alert>
     <div class="import-actions">
       <el-button :loading="downloading" @click="downloadTemplate">下载模板</el-button>
       <el-button type="primary" :loading="busy" @click="fileInput?.click()">选择 Excel 文件</el-button>
-      <input ref="fileInput" type="file" accept=".xlsx" hidden :disabled="busy" @change="selectFile" />
+      <input ref="fileInput" type="file" accept=".xls,.xlsx" hidden :disabled="busy" @change="selectFile" />
       <span class="file-name">{{ fileName }}</span>
     </div>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />

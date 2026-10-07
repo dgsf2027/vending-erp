@@ -103,7 +103,8 @@ public class ImportService {
             {"商品条形码", "0"}, {"货道号", "0"}, {"支付方式", "0"}, {"设备名称", "0"}};
     private static final String[][] REPLENISH_COLS = {
             {"设备ID", "1"}, {"商品名称", "1"}, {"本次补货数", "1"}, {"补货时间", "1"},
-            {"货道号", "0"}, {"商品条形码", "0"}, {"补货前库存", "0"}, {"补货后库存", "0"}, {"补货人", "0"}};
+            {"货道号", "0"}, {"商品条形码", "0"}, {"商品价格", "0"},
+            {"补货前库存", "0"}, {"补货后库存", "0"}, {"补货人", "0"}};
     private static final String[][] PRODUCT_LIST_COLS = {
             {"商品编号", "1"}, {"商品名称", "1"},
             {"商品条形码", "0"}, {"售价", "0"}, {"商品分类", "0"}};
@@ -160,6 +161,7 @@ public class ImportService {
     public PreviewResp upload(String fileType, String fileName, byte[] content) {
         String[][] spec = specOf(fileType);
         ParsedSheet sheet = excelParser.parse(new ByteArrayInputStream(content));
+        normalizeReplenishHeaders(fileType, sheet);
 
         PreviewResp resp = new PreviewResp();
         resp.setFileName(fileName);
@@ -168,7 +170,7 @@ public class ImportService {
 
         // 暂存原始文件,等第②步确认
         String token = IdUtil.fastSimpleUUID();
-        File tmp = new File(storageDir, "tmp/" + token + ".xlsx");
+        File tmp = new File(storageDir, "tmp/" + token + excelSuffix(fileName));
         FileUtil.writeBytes(content, tmp);
         PendingUpload pending = new PendingUpload();
         pending.setFileType(fileType);
@@ -177,6 +179,30 @@ public class ImportService {
         pendingUploads.put(token, pending);
         resp.setToken(token);
         return resp;
+    }
+
+    /** 售卖机后台新导出表头与旧版同义,统一为现有处理管线使用的列名。 */
+    private static void normalizeReplenishHeaders(String fileType, ParsedSheet sheet) {
+        if (!ImportBatch.TYPE_REPLENISH.equals(fileType)) return;
+        Map<String, String> aliases = new LinkedHashMap<>();
+        aliases.put("本次补货数量", "本次补货数");
+        aliases.put("补货人员", "补货人");
+        for (Map.Entry<String, String> alias : aliases.entrySet()) {
+            if (!sheet.getHeaders().contains(alias.getKey()) || sheet.getHeaders().contains(alias.getValue())) continue;
+            int index = sheet.getHeaders().indexOf(alias.getKey());
+            sheet.getHeaders().set(index, alias.getValue());
+            for (ParsedSheet.Row row : sheet.getRows()) {
+                Map<String, String> cells = new LinkedHashMap<>();
+                for (Map.Entry<String, String> cell : row.getCells().entrySet()) {
+                    cells.put(cell.getKey().equals(alias.getKey()) ? alias.getValue() : cell.getKey(), cell.getValue());
+                }
+                row.setCells(cells);
+            }
+        }
+    }
+
+    static String excelSuffix(String fileName) {
+        return fileName != null && fileName.toLowerCase(java.util.Locale.ROOT).endsWith(".xls") ? ".xls" : ".xlsx";
     }
 
     /** 填列校验 + 预览(upload 与导入自愈 applyFix 共用) */
@@ -251,6 +277,7 @@ public class ImportService {
         }
         String[][] spec = specOf(pending.getFileType());
         ParsedSheet sheet = excelParser.parse(new ByteArrayInputStream(FileUtil.readBytes(tmp)));
+        normalizeReplenishHeaders(pending.getFileType(), sheet);
         FixContext ctx = new FixContext();
         ctx.setFileType(pending.getFileType());
         ctx.setSpec(spec);
@@ -283,6 +310,7 @@ public class ImportService {
         pending.setColumnMap(columnMap);
         String[][] spec = specOf(pending.getFileType());
         ParsedSheet sheet = excelParser.parse(new ByteArrayInputStream(FileUtil.readBytes(tmp)));
+        normalizeReplenishHeaders(pending.getFileType(), sheet);
         remapHeaders(sheet, columnMap);
         PreviewResp resp = new PreviewResp();
         resp.setToken(token);
@@ -420,6 +448,7 @@ public class ImportService {
             throw new BizException("暂存文件丢失,请重新上传");
         }
         ParsedSheet sheet = excelParser.parse(new ByteArrayInputStream(FileUtil.readBytes(tmp)));
+        normalizeReplenishHeaders(pending.getFileType(), sheet);
         // 导入自愈:若确认过列映射,把厂家改了名的表头改回期望名,下游取列逻辑无需改动
         remapHeaders(sheet, pending.getColumnMap());
 
@@ -438,7 +467,7 @@ public class ImportService {
         // P0-B 路径穿越修复:归档名一律用服务端生成的 batchNo+固定后缀,
         // 绝不拼接客户端传来的原始文件名(../../xx 之类会写出存储目录并覆盖任意文件)。
         // 原始文件名仅存 import_batch.file_name 字段供展示。
-        File archive = new File(storageDir, batch.getId() + "/" + batch.getBatchNo() + ".xlsx");
+        File archive = new File(storageDir, batch.getId() + "/" + batch.getBatchNo() + excelSuffix(pending.getFileName()));
         FileUtil.move(tmp, archive, true);
         batch.setArchivePath(archive.getAbsolutePath());
 
@@ -624,9 +653,22 @@ public class ImportService {
                     continue;
                 }
 
-                // 防重:同机器+商品+补货时间戳 已有机器账流水 → 跳过(重复导入零副作用)
-                String key = machineId + "\u0001" + productId + "\u0001" + time;
-                if (!seenInFile.add(key) || queryMapper.machineLedgerExists(machineId, productId, time) > 0) {
+                String slotNo = row.get("货道号") == null ? null : row.get("货道号").trim();
+                if (slotNo != null && slotNo.isEmpty()) slotNo = null;
+                BigDecimal before = row.get("补货前库存") == null ? null
+                        : parseDecimal(row.get("补货前库存"), "补货前库存");
+                BigDecimal after = row.get("补货后库存") == null ? null
+                        : parseDecimal(row.get("补货后库存"), "补货后库存");
+                if (before != null && after != null && before.add(qty).compareTo(after) != 0) {
+                    fail++;
+                    recordError(batch.getId(), row, ImportError.TYPE_FORMAT,
+                            "库存数量不一致:补货前库存 + 本次补货数 应等于补货后库存");
+                    continue;
+                }
+
+                // 一货道一行；同机同商品同时间的不同货道均须入账。
+                String key = machineId + "\u0001" + productId + "\u0001" + slotNo + "\u0001" + time;
+                if (!seenInFile.add(key) || queryMapper.replenishRowExists(machineId, productId, slotNo, time) > 0) {
                     dup++;
                     continue;
                 }
@@ -634,18 +676,14 @@ public class ImportService {
                 ReplenishRow r = new ReplenishRow();
                 r.machineId = machineId;
                 r.productId = productId;
-                r.slotNo = row.get("货道号");
+                r.slotNo = slotNo;
                 r.qty = qty;
                 r.time = time;
-                r.stockAfter = row.get("补货后库存") == null ? null
-                        : parseDecimal(row.get("补货后库存"), "补货后库存");
+                r.stockAfter = after;
                 r.rowNo = row.getRowNo();
                 r.raw = JSONUtil.toJsonStr(row.getCells());
                 String groupKey = machineId + "\u0001" + time + "\u0001" + (qty.signum() > 0 ? "+" : "-");
                 groups.computeIfAbsent(groupKey, k -> new ArrayList<>()).add(r);
-                if (r.stockAfter != null) {
-                    snapshotRows.add(r);
-                }
             } catch (RowException e) {
                 fail++;
                 recordError(batch.getId(), row, e.errorType, e.getMessage());
@@ -693,6 +731,9 @@ public class ImportService {
                 }
                 docs++;
                 ok += rows.size();
+                for (ReplenishRow r : rows) {
+                    if (r.stockAfter != null) snapshotRows.add(r);
+                }
             } catch (Exception ex) {
                 for (ReplenishRow r : rows) {
                     fail++;
@@ -709,12 +750,32 @@ public class ImportService {
             }
         }
 
-        // 机器快照:用"补货后库存"落锚点(source=补货记录,P2-12 锚点+增量推算法)
+        // 每行的库存是货道库存。先按货道记快照，再将各货道合成商品总库存锚点。
+        // 按业务时间处理，后导入的早期文件也可按时间重算已知货道。
+        snapshotRows.sort(java.util.Comparator.comparing(r -> r.time));
         int snapshots = 0;
+        Set<String> aggregateKeys = new java.util.LinkedHashSet<>();
         for (ReplenishRow r : snapshotRows) {
             stockService.recordMachineSnapshot(r.machineId, r.productId, r.slotNo,
-                    r.stockAfter, "补货记录", r.time, IMPORT_USER);
+                    r.stockAfter, "补货记录", r.time, IMPORT_USER, batch.getId());
+            if (r.slotNo != null) {
+                aggregateKeys.add(r.machineId + "\u0001" + r.productId + "\u0001" + r.time);
+            }
             snapshots++;
+        }
+        for (String key : aggregateKeys) {
+            String[] parts = key.split("\u0001");
+            Long machineId = Long.valueOf(parts[0]);
+            Long productId = Long.valueOf(parts[1]);
+            LocalDateTime at = LocalDateTime.parse(parts[2]);
+            BigDecimal total = BigDecimal.ZERO;
+            for (MachineStockSnapshot slot : snapshotMapper.latestSlotsAt(machineId, productId, at)) {
+                BigDecimal sold = saleRecordMapper.sumSlotOutboundBetween(machineId, productId,
+                        slot.getSlotNo(), slot.getSnapshotTime(), at);
+                total = total.add(slot.getQty()).subtract(sold);
+            }
+            stockService.recordMachineSnapshot(machineId, productId, null,
+                    total, "补货记录", at, IMPORT_USER, batch.getId());
         }
 
         // 负库存红灯:本批导致仓库结存为负的商品(待补录采购)
@@ -922,13 +983,15 @@ public class ImportService {
                 }
                 int ledgerRemoved = stockLedgerMapper.delete(new LambdaQueryWrapper<StockLedger>()
                         .in(StockLedger::getDocId, docIds));
-                int snapRemoved = 0;
+                int snapRemoved = snapshotMapper.delete(new LambdaQueryWrapper<MachineStockSnapshot>()
+                        .eq(MachineStockSnapshot::getImportBatchId, batch.getId()));
                 for (String key : snapKeys) {
                     String[] parts = key.split("\u0001");
                     snapRemoved += snapshotMapper.delete(new LambdaQueryWrapper<MachineStockSnapshot>()
                             .eq(MachineStockSnapshot::getMachineId, Long.valueOf(parts[0]))
                             .eq(MachineStockSnapshot::getSnapshotTime, LocalDateTime.parse(parts[1]))
-                            .eq(MachineStockSnapshot::getSnapshotSource, "补货记录"));
+                            .eq(MachineStockSnapshot::getSnapshotSource, "补货记录")
+                            .isNull(MachineStockSnapshot::getImportBatchId));
                 }
                 for (DocHead d : docs) {
                     String before = JSONUtil.toJsonStr(d);

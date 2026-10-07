@@ -4,7 +4,6 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.apache.poi.ss.usermodel.*;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 import top.aole.vend.common.exception.BizException;
@@ -50,10 +49,11 @@ public class PurchaseImportService {
     public Preview preview(MultipartFile file, String kind) {
         checkKind(kind);
         if (file.isEmpty() || file.getSize() > 5 * 1024 * 1024) throw new BizException("请选择不超过 5MB 的 Excel 文件");
-        if (file.getOriginalFilename() == null || !file.getOriginalFilename().toLowerCase(Locale.ROOT).endsWith(".xlsx"))
-            throw new BizException("仅支持 .xlsx 文件，请先下载模板");
+        if (file.getOriginalFilename() == null ||
+                !file.getOriginalFilename().toLowerCase(Locale.ROOT).matches(".*\\.xlsx?$"))
+            throw new BizException("仅支持 .xls 或 .xlsx 文件，请先下载模板");
         Preview result = new Preview();
-        try (Workbook book = new XSSFWorkbook(file.getInputStream())) {
+        try (Workbook book = WorkbookFactory.create(file.getInputStream())) {
             if (book.getNumberOfSheets() != 1) throw new BizException("请仅保留一个明细工作表，避免遗漏数据");
             Sheet sheet = book.getSheetAt(0);
             if (sheet.getLastRowNum() > 500) throw new BizException("每次最多导入 500 行，请拆分文件");
@@ -117,7 +117,7 @@ public class PurchaseImportService {
         } catch (BizException e) {
             throw e;
         } catch (IOException | RuntimeException e) {
-            throw new BizException("文件无法读取，请上传未加密、未损坏的 .xlsx 文件");
+            throw new BizException("文件无法读取，请上传未加密、未损坏的 .xls 或 .xlsx 文件");
         }
         if (result.getRows().isEmpty() && result.getErrors().isEmpty()) throw new BizException("文件没有商品明细，请填写模板后上传");
         if (!result.getRows().isEmpty()) {

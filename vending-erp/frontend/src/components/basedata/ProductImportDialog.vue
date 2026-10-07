@@ -67,8 +67,8 @@ function close() {
 async function onPick(file: UploadFile) {
   const raw = file.raw
   if (!raw) return
-  if (!/\.xlsx$/i.test(raw.name)) {
-    ElMessage.error('只支持 .xlsx(老的 .xls 请用 Excel 另存为 xlsx)')
+  if (!/\.xlsx?$/i.test(raw.name)) {
+    ElMessage.error('请选择 .xls 或 .xlsx 文件')
     return
   }
   parsing.value = true
@@ -167,7 +167,7 @@ function actionChip(action?: string) {
       <el-upload
         :auto-upload="false"
         :show-file-list="false"
-        accept=".xlsx"
+        accept=".xls,.xlsx"
         :on-change="onPick"
       >
         <el-button type="primary" :loading="parsing">
@@ -197,7 +197,7 @@ function actionChip(action?: string) {
 
     <div v-if="!rows.length" class="ledger-card">
       <el-empty
-        :description="parsing ? '正在解析…' : '选一个 .xlsx,解析结果会直接落到这里,可以改完再入档'"
+        :description="parsing ? '正在解析…' : '选一个 .xls 或 .xlsx,解析结果会直接落到这里,可以改完再入档'"
         :image-size="70"
       />
     </div>

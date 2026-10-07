@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -200,7 +201,50 @@ class ImportServiceTest {
         return xlsx(all);
     }
 
+    private byte[] realFormatXls(Object[][] rows) throws Exception {
+        String[] headers = {"设备ID", "货道号", "商品名称", "商品价格", "补货前库存",
+                "本次补货数量", "补货后库存", "补货人员", "补货时间"};
+        try (HSSFWorkbook workbook = new HSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Sheet sheet = workbook.createSheet("系统补货记录");
+            for (int i = 0; i <= rows.length; i++) {
+                Row row = sheet.createRow(i);
+                Object[] values = i == 0 ? headers : rows[i - 1];
+                for (int j = 0; j < values.length; j++) row.createCell(j).setCellValue(values[j].toString());
+            }
+            workbook.write(out);
+            return out.toByteArray();
+        }
+    }
+
+    private byte[] xls(Object[][] rows) throws Exception {
+        try (HSSFWorkbook workbook = new HSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Sheet sheet = workbook.createSheet("data");
+            for (int i = 0; i < rows.length; i++) {
+                Row row = sheet.createRow(i);
+                for (int j = 0; j < rows[i].length; j++) {
+                    if (rows[i][j] != null) row.createCell(j).setCellValue(rows[i][j].toString());
+                }
+            }
+            workbook.write(out);
+            return out.toByteArray();
+        }
+    }
+
     // ============================== 通道1:出货明细 ==============================
+
+    @Test
+    void saleLegacyXlsCanPreviewAndConfirm() throws Exception {
+        machine("DEV-XLS-SALE", "销售测试机");
+        byte[] content = xls(new Object[][]{
+                SALE_HEADER,
+                {"XLS-ORDER-1", "饮料", null, "1", "2", "DEV-XLS-SALE", "3.00", "正常订单", "微信", "2026-07-01 12:00:00"},
+        });
+        ImportDtos.PreviewResp preview = importService.upload(ImportBatch.TYPE_SALE, "出货明细.xls", content);
+        assertTrue(preview.isColumnsOk());
+        ImportDtos.CommitResp result = importService.confirm(preview.getToken(), OP);
+        assertEquals(1, result.getRowOk());
+        assertTrue(importBatchMapper.selectById(result.getBatchId()).getArchivePath().endsWith(".xls"));
+    }
 
     @Test
     void sale_import_then_reimport_isIdempotent() throws Exception {
@@ -291,6 +335,58 @@ class ImportServiceTest {
     }
 
     // ============================== 通道2:系统补货记录 ==============================
+
+    @Test
+    void replenish_realXls_importsEverySlotAndAggregatesStock() throws Exception {
+        Machine machine = machine("DEV-REAL", "多货道售卖机");
+        Product product = product("矿泉水", "690888", null);
+        alias(null, null, "矿泉水550ml", product.getId());
+        stockWarehouse(product.getId(), "50", "1.0");
+        byte[] file = realFormatXls(new Object[][]{
+                {"DEV-REAL", "1", "矿泉水550ml", "2.00", "2", "4", "6", "小邱", "2026-07-05 16:57:23"},
+                {"DEV-REAL", "2", "矿泉水550ml", "2.00", "1", "5", "6", "小邱", "2026-07-05 16:57:23"},
+        });
+        ImportDtos.PreviewResp preview = importService.upload(ImportBatch.TYPE_REPLENISH, "系统补货记录.xls", file);
+        assertTrue(preview.isColumnsOk(), preview.getWarnings().toString());
+        ImportDtos.CommitResp first = importService.confirm(preview.getToken(), OP);
+        assertEquals(2, first.getRowOk());
+        assertEquals(1, first.getDocsCreated());
+        assertTrue(importBatchMapper.selectById(first.getBatchId()).getArchivePath().endsWith(".xls"));
+        assertEquals(0, new BigDecimal("41").compareTo(stockService.getWarehouseStock(product.getId())));
+        assertEquals(0, new BigDecimal("12").compareTo(stockService.getMachineStock(machine.getId(), product.getId())));
+        ImportDtos.PreviewResp again = importService.upload(ImportBatch.TYPE_REPLENISH, "系统补货记录.xls", file);
+        ImportDtos.CommitResp second = importService.confirm(again.getToken(), OP);
+        assertEquals(2, second.getRowDup());
+        assertEquals(0, second.getDocsCreated());
+    }
+
+    @Test
+    void replenish_laterPartialSlotEventKeepsOtherSlotStock() throws Exception {
+        Machine machine = machine("DEV-PARTIAL", "分批补货机器");
+        Product product = product("茶饮", "690890", null);
+        alias(null, null, "茶饮瓶装", product.getId());
+        byte[] file = realFormatXls(new Object[][]{
+                {"DEV-PARTIAL", "1", "茶饮瓶装", "3.00", "0", "5", "5", "小邱", "2026-07-05 09:00:00"},
+                {"DEV-PARTIAL", "2", "茶饮瓶装", "3.00", "0", "4", "4", "小邱", "2026-07-05 09:00:00"},
+                {"DEV-PARTIAL", "1", "茶饮瓶装", "3.00", "5", "2", "7", "小邱", "2026-07-06 09:00:00"},
+        });
+        ImportDtos.PreviewResp preview = importService.upload(ImportBatch.TYPE_REPLENISH, "补货.xls", file);
+        ImportDtos.CommitResp result = importService.confirm(preview.getToken(), OP);
+        assertEquals(3, result.getRowOk());
+        assertEquals(0, new BigDecimal("11").compareTo(stockService.getMachineStock(machine.getId(), product.getId())));
+    }
+
+    @Test
+    void replenish_rejectsMismatchedInventoryMath() throws Exception {
+        machine("DEV-MATH", "库存核对机器");
+        Product product = product("矿泉水", "690889", null);
+        alias(null, null, "矿泉水550ml", product.getId());
+        ImportDtos.PreviewResp preview = importService.upload(ImportBatch.TYPE_REPLENISH, "系统补货记录.xls",
+                realFormatXls(new Object[][]{{"DEV-MATH", "1", "矿泉水550ml", "2.00", "2", "4", "9", "小邱", "2026-07-05 16:57:23"}}));
+        ImportDtos.CommitResp result = importService.confirm(preview.getToken(), OP);
+        assertEquals(1, result.getRowFail());
+        assertEquals(0, result.getDocsCreated());
+    }
 
     @Test
     void replenish_forward_createsConfirmedTransferDoc_withRealBizTime() throws Exception {
@@ -475,7 +571,7 @@ class ImportServiceTest {
         assertTrue(rollback.isSuccess());
         assertEquals(1, rollback.getDocsVoided());
         assertTrue(rollback.getLedgerRemoved() >= 2);
-        assertEquals(1, rollback.getSnapshotRemoved());
+        assertEquals(2, rollback.getSnapshotRemoved());
         // 仓库回到 60,机器回到 0,单据已作废
         assertEquals(0, new BigDecimal("60").compareTo(stockService.getWarehouseStock(p.getId())));
         assertEquals(0, BigDecimal.ZERO.compareTo(stockService.getMachineStock(m.getId(), p.getId())));
@@ -519,6 +615,21 @@ class ImportServiceTest {
     }
 
     // ============================== 通道3:商品列表 ==============================
+
+    @Test
+    void productListLegacyXlsCanPreviewAndConfirm() throws Exception {
+        Product product = product("旺仔牛奶", "6901919", null);
+        byte[] content = xls(new Object[][]{
+                {"商品编号", "商品条形码", "商品名称", "售价", "商品分类"},
+                {"XLS-G001", "6901919", "旺仔牛奶245ml", "4.5", "饮料"},
+        });
+        ImportDtos.PreviewResp preview = importService.upload(ImportBatch.TYPE_PRODUCT_LIST, "商品列表.xls", content);
+        assertTrue(preview.isColumnsOk());
+        ImportDtos.CommitResp result = importService.confirm(preview.getToken(), OP);
+        assertEquals(1, result.getRowOk());
+        assertEquals(product.getId(), skuAliasMapper.selectOne(new LambdaQueryWrapper<SkuAlias>()
+                .eq(SkuAlias::getAliasCode, "XLS-G001")).getProductId());
+    }
 
     @Test
     void productList_bindsByBarcode_unmatchedGoesPending() throws Exception {

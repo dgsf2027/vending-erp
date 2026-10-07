@@ -114,13 +114,13 @@ public class ImportArchiveService {
             }
             String fileName = batch.getFileName();
             if (fileName == null || fileName.trim().isEmpty()) {
-                fileName = batch.getBatchNo() + ".xlsx";
+                fileName = batch.getBatchNo() + (archivePath.toLowerCase(java.util.Locale.ROOT).endsWith(".xls") ? ".xls" : ".xlsx");
             }
             // 老记录也可能带客户端路径或控制字符;响应只携带文件名。
             fileName = fileName.replace('\\', '/');
             fileName = fileName.substring(fileName.lastIndexOf('/') + 1).replaceAll("\\p{Cntrl}", "");
             if (fileName.trim().isEmpty()) {
-                fileName = "导入原文件.xlsx";
+                fileName = "导入原文件" + (archivePath.toLowerCase(java.util.Locale.ROOT).endsWith(".xls") ? ".xls" : ".xlsx");
             }
             return new ArchivedFile(path, fileName, Files.size(path));
         } catch (IOException | InvalidPathException | SecurityException e) {

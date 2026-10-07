@@ -48,7 +48,7 @@ const channels: Channel[] = [
     type: '系统补货记录',
     icon: '🚚',
     title: '通道② 补货记录 → 出库上架转移单',
-    desc: '转移单唯一生产者;负数=取回逆向转移;自动冲抵手工预挂单;仓库不足亮"待补录采购"红灯',
+    desc: '直接上传后台导出的 .xls 或 .xlsx；按设备、货道、商品和时间逐行核对。本次补货数量为正数是上架，负数是取回。',
     target: 'doc(出库上架)',
   },
   {
@@ -477,13 +477,13 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
         <div class="text-11px text-gray-400 mb-8px">落表:{{ ch.target }} · 原始文件自动归档 · 整批可回滚</div>
         <el-upload
           :show-file-list="false"
-          accept=".xlsx"
+          accept=".xls,.xlsx"
           :http-request="makeUploader(ch.type)"
           drag
         >
           <div class="py-10px text-13px">
             <el-icon v-if="uploading === ch.type" class="is-loading"><i /></el-icon>
-            {{ uploading === ch.type ? '解析中…' : '拖 .xlsx 到这里,或点击选择' }}
+            {{ uploading === ch.type ? '解析中…' : '拖 .xls / .xlsx 到这里,或点击选择' }}
           </div>
         </el-upload>
       </el-card>
@@ -648,11 +648,14 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
     <ImportFileDrawer v-model="fileVisible" :batch="fileBatch" />
 
     <!-- 预览确认对话框(两步式第②步) -->
-    <el-dialog v-model="previewVisible" :title="`预览核对 · ${preview?.fileName ?? ''}`" width="860px" top="4vh">
+    <el-dialog v-model="previewVisible" :title="`预览核对 · ${preview?.fileName ?? ''}`" width="min(1120px, 96vw)" top="4vh">
       <template v-if="preview">
         <div class="mb-8px text-13px">
           共 <b>{{ preview.rowTotal }}</b> 行(下方仅预览前 20 行)· 类型:{{ preview.fileType }}
         </div>
+        <el-alert v-if="preview.fileType === '系统补货记录'" type="info" :closable="false" class="mb-8px">
+          每个货道是一条记录，同一商品补多个货道会合计转移数量；“商品价格”是销售价，不会当作采购成本。上传预览不入账，确认导入后才生成出库上架或退库单。
+        </el-alert>
         <el-alert
           v-for="w in preview.warnings"
           :key="w"
@@ -846,7 +849,7 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
         <div v-if="wizardStatus?.step1.done" class="text-13px mb-8px">
           ✅ 已完成(批次 {{ wizardStatus.step1.batchNo }})
         </div>
-        <el-upload v-if="!step1Preview" :show-file-list="false" accept=".xlsx" :http-request="wizardUploader(1)" drag>
+        <el-upload v-if="!step1Preview" :show-file-list="false" accept=".xls,.xlsx" :http-request="wizardUploader(1)" drag>
           <div class="py-16px text-13px">
             {{ wizardUploading ? '解析中…' : '拖老 Excel 套表到这里(读「商品档案」+「配比底稿」+「销售明细」)' }}
           </div>
@@ -893,7 +896,7 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
 
       <!-- 第②步 -->
       <template v-else-if="wizardStep === 1">
-        <el-upload v-if="!step2Preview" :show-file-list="false" accept=".xlsx" :http-request="wizardUploader(2)" drag>
+        <el-upload v-if="!step2Preview" :show-file-list="false" accept=".xls,.xlsx" :http-request="wizardUploader(2)" drag>
           <div class="py-16px text-13px">
             {{ wizardUploading ? '解析中…' : '再拖同一个套表文件(读「采购入库表」→ 生成期初采购单据并过账)' }}
           </div>
@@ -921,7 +924,7 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
 
       <!-- 第③步 -->
       <template v-else-if="wizardStep === 2">
-        <el-upload v-if="!step3Preview" :show-file-list="false" accept=".xlsx" :http-request="wizardUploader(3)" drag>
+        <el-upload v-if="!step3Preview" :show-file-list="false" accept=".xls,.xlsx" :http-request="wizardUploader(3)" drag>
           <div class="py-16px text-13px">
             {{ wizardUploading ? '解析中…' : '再拖同一个套表文件(读「销售明细」→ 复用通道1入销售记录,订单号去重)' }}
           </div>

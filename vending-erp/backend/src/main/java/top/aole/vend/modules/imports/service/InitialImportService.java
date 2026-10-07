@@ -735,7 +735,7 @@ public class InitialImportService {
 
     private String stash(String step, String fileName, byte[] content) {
         String token = IdUtil.fastSimpleUUID();
-        File tmp = new File(storageDir, "tmp/" + token + ".xlsx");
+        File tmp = new File(storageDir, "tmp/" + token + ImportService.excelSuffix(fileName));
         FileUtil.writeBytes(content, tmp);
         Pending pending = new Pending();
         pending.setStep(step);
@@ -768,7 +768,8 @@ public class InitialImportService {
         batch.setCreateUser(ImportService.IMPORT_USER);
         batchMapper.insert(batch);
         // P0-B 路径穿越修复:归档名=服务端 batchNo+固定后缀,不拼客户端原始文件名
-        File archive = new File(storageDir, batch.getId() + "/" + batch.getBatchNo() + ".xlsx");
+        File archive = new File(storageDir, batch.getId() + "/" + batch.getBatchNo()
+                + ImportService.excelSuffix(pending.getFileName()));
         FileUtil.move(new File(pending.getTmpPath()), archive, true);
         batch.setArchivePath(archive.getAbsolutePath());
         return batch;
