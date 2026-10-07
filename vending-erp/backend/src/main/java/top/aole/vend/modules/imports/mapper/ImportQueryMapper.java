@@ -36,12 +36,17 @@ public interface ImportQueryMapper {
     @Select("SELECT COUNT(*) FROM yc_vend_period_lock WHERE period >= #{period} AND is_deleted=0")
     int periodLocked(@Param("period") String period);
 
-    /** 机器账里该时间戳是否已有流水(通道2防重:同机器+商品+补货时间戳) */
-    @Select("SELECT COUNT(*) FROM yc_vend_stock_ledger " +
-            "WHERE location_type='机器' AND machine_id=#{machineId} AND product_id=#{productId} " +
-            "AND biz_time=#{bizTime} AND is_deleted=0")
-    int machineLedgerExists(@Param("machineId") Long machineId,
+    /** 同一货道的补货明细才算重复；同刻同商品可补多个货道。 */
+    @Select("SELECT COUNT(*) FROM yc_vend_doc_item i JOIN yc_vend_doc_head d ON d.id=i.doc_id " +
+            "WHERE d.machine_id=#{machineId} AND i.product_id=#{productId} " +
+            "AND i.slot_no <=> #{slotNo} AND d.doc_source='导入' " +
+            "AND d.doc_type IN ('出库上架','退库') AND d.is_deleted=0 AND i.is_deleted=0 " +
+            "AND EXISTS (SELECT 1 FROM yc_vend_stock_ledger l WHERE l.doc_id=d.id " +
+            "AND l.machine_id=d.machine_id AND l.product_id=i.product_id " +
+            "AND l.location_type='机器' AND l.biz_time=#{bizTime} AND l.is_deleted=0)")
+    int replenishRowExists(@Param("machineId") Long machineId,
                             @Param("productId") Long productId,
+                            @Param("slotNo") String slotNo,
                             @Param("bizTime") java.time.LocalDateTime bizTime);
 
     /** 通道1改价侦测清单:批次内 已归集行 按商品聚合出最近成交价,与档案参考价不同的 */

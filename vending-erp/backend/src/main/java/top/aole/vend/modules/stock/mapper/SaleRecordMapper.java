@@ -26,4 +26,13 @@ public interface SaleRecordMapper extends BaseMapper<SaleRecord> {
     BigDecimal sumOutboundAfter(@Param("machineId") Long machineId,
                                 @Param("productId") Long productId,
                                 @Param("after") LocalDateTime after);
+
+    @Select("SELECT COALESCE(SUM(qty),0) FROM yc_vend_sale_record WHERE machine_id=#{machineId} " +
+            "AND product_id=#{productId} AND slot_no=#{slotNo} AND order_type IN ('正常','兑换') " +
+            "AND biz_time>#{after} AND biz_time<=#{at} AND is_deleted=0")
+    BigDecimal sumSlotOutboundBetween(@Param("machineId") Long machineId,
+                                      @Param("productId") Long productId,
+                                      @Param("slotNo") String slotNo,
+                                      @Param("after") LocalDateTime after,
+                                      @Param("at") LocalDateTime at);
 }

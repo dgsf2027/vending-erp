@@ -32,6 +32,8 @@ public class MachineStockSnapshot {
     private BigDecimal qty;
     /** 来源:后台缺货页/盘点/补货记录 */
     private String snapshotSource;
+    /** 补货导入批次；用于精确回滚，手工/盘点快照为空。 */
+    private Long importBatchId;
 
     private Long createUser;
     private Long updateUser;

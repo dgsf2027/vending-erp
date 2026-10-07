@@ -122,6 +122,13 @@ public class StockService {
     public Long recordMachineSnapshot(Long machineId, Long productId, String slotNo,
                                       BigDecimal qty, String source, LocalDateTime snapshotTime,
                                       Long userId) {
+        return recordMachineSnapshot(machineId, productId, slotNo, qty, source, snapshotTime, userId, null);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public Long recordMachineSnapshot(Long machineId, Long productId, String slotNo,
+                                      BigDecimal qty, String source, LocalDateTime snapshotTime,
+                                      Long userId, Long importBatchId) {
         MachineStockSnapshot snap = new MachineStockSnapshot();
         snap.setMachineId(machineId);
         snap.setProductId(productId);
@@ -129,6 +136,7 @@ public class StockService {
         snap.setQty(qty);
         snap.setSnapshotSource(source);
         snap.setSnapshotTime(snapshotTime);
+        snap.setImportBatchId(importBatchId);
         snap.setCreateUser(userId);
         snapshotMapper.insert(snap);
         return snap.getId();
