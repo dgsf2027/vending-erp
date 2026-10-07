@@ -36,6 +36,10 @@ function applyImport(rows: PurchaseImportLine[]) {
     receiveForm.rows = rows.map((r) => ({
       productId: r.productId, productName: r.productName, skuCode: r.skuCode,
       expectQty: null, qty: Number(r.qty), unitPrice: Number(r.unitPrice), poItemId: null, hint: null,
+      boxSpec: r.boxSpec == null ? null : Number(r.boxSpec),
+      boxCount: r.boxCount == null ? null : Number(r.boxCount),
+      boxPrice: r.boxPrice == null ? null : Number(r.boxPrice),
+      importedTotal: r.totalPrice == null ? null : Number(r.totalPrice),
     }))
   } else {
     openPoForm()
@@ -202,6 +206,10 @@ interface ReceiveRow {
   unitPrice: number | null
   poItemId: number | null
   hint?: PriceCheckResult | null
+  boxSpec?: number | null
+  boxCount?: number | null
+  boxPrice?: number | null
+  importedTotal?: number | null
 }
 
 const receiveVisible = ref(false)
@@ -270,6 +278,11 @@ function quickReceive() {
 
 function addReceiveRow() {
   receiveForm.rows.push({ productId: null, expectQty: null, qty: null, unitPrice: null, poItemId: null, hint: null })
+}
+
+function onReceiveProductChanged(row: ReceiveRow) {
+  row.boxSpec = row.boxCount = row.boxPrice = row.importedTotal = null
+  checkPrice(row, receiveForm.supplierId)
 }
 
 function diffOf(row: ReceiveRow): number | null {
@@ -422,10 +435,10 @@ onMounted(() => {
     <div class="ledger-crumb">园区小卖 ERP / 采购</div>
     <div class="ledger-title">
       <h2>采购 · 订货与入库</h2>
-      <span class="sub">在途=Σ(订购−已收);确认入库自动过账仓库账 + 回写订货单,结算付款链 M3 接上</span>
+      <span class="sub">按表格导入或直接录入到货商品，核对数量、价格后确认入库</span>
     </div>
     <p class="ledger-note">
-      进货到货了,点<b>「直接录入库」</b>录一张采购入库单,库存和加权成本随之更新。想先下单、到货再点数收货,用下面的<b>订货单</b>(可选)。
+      已有采购表格可点<b>「按表格导入」</b>，核对整件规格、件数和金额；也可点<b>「直接录入库」</b>手填。选供应商并确认后，库存和成本才会更新。先下单再收货，可用下方的<b>订货单</b>。
     </p>
 
     <!-- 编号流程条(设计七律#2) -->
@@ -442,7 +455,7 @@ onMounted(() => {
       <h3>
         📥 采购入库单 <span class="hint">确认后库存 +、加权成本更新;确认过的单不可改,只能红冲</span>
         <span style="margin-left: auto; display: flex; gap: 8px">
-          <el-button size="small" @click="openImport('receipt')">列表导入</el-button>
+          <el-button size="small" @click="openImport('receipt')">按表格导入</el-button>
           <el-button type="primary" size="small" @click="quickReceive">⚡ 直接录入库</el-button>
         </span>
       </h3>
@@ -605,13 +618,16 @@ onMounted(() => {
     </el-dialog>
 
     <!-- 收货录入(应收/实收两列) -->
-    <el-dialog v-model="receiveVisible" width="860px" :close-on-click-modal="false">
+    <el-dialog v-model="receiveVisible" width="min(1080px, 96vw)" :close-on-click-modal="false">
       <template #header>
         <b>📥 收货录入 · {{ receiveMode }}</b>
         <span class="mini" style="margin-left: 10px">
           {{ receiveDocNo ? `单号 ${receiveDocNo}` : '确认时自动生成单号' }}{{ receiveForm.poNo ? ` · 来自订货单 ${receiveForm.poNo}` : '' }}
         </span>
       </template>
+      <el-alert v-if="receiveForm.rows.some((row) => row.boxSpec != null)" type="info" :closable="false" show-icon style="margin-bottom: 12px">
+        已带入表格明细。整件规格和整件价格仅用于核对；库存按采购数量（基本单位）入账，金额按数量 × 单价计算。请选供应商，确认后才会入库。
+      </el-alert>
       <div style="display: flex; gap: 14px; margin-bottom: 12px">
         <div style="flex: 1">
           <div class="mini" style="margin-bottom: 4px">供应商</div>
@@ -627,8 +643,8 @@ onMounted(() => {
       <table class="entry-table">
         <thead>
           <tr>
-            <th style="width: 34%">商品</th>
-            <th>应收</th><th>实收</th><th>差异</th><th>单价 ¥</th><th>金额 ¥</th>
+            <th style="width: 38%">商品</th>
+            <th v-if="receiveForm.purchaseOrderId">应收</th><th>实收数量</th><th v-if="receiveForm.purchaseOrderId">差异</th><th>进货单价 ¥/基本单位</th><th>金额 ¥</th>
             <th style="width: 22%">比价提示</th><th />
           </tr>
         </thead>
@@ -636,11 +652,14 @@ onMounted(() => {
           <tr v-for="(row, idx) in receiveForm.rows" :key="idx">
             <td>
               <span v-if="row.poItemId">{{ row.skuCode }} · {{ row.productName }}</span>
-              <ProductSelect v-else v-model="row.productId" @update:model-value="checkPrice(row, receiveForm.supplierId)" />
+              <ProductSelect v-else v-model="row.productId" @update:model-value="onReceiveProductChanged(row)" />
+              <div v-if="row.boxSpec != null" class="mini" style="margin-top: 4px">
+                表格：{{ row.boxSpec }}/件 × {{ row.boxCount }} 件 · ¥{{ row.boxPrice }}/件 = ¥{{ Number(row.importedTotal).toFixed(2) }}
+              </div>
             </td>
-            <td><span class="num">{{ row.expectQty ?? '—' }}</span></td>
+            <td v-if="receiveForm.purchaseOrderId"><span class="num">{{ row.expectQty ?? '—' }}</span></td>
             <td><el-input-number v-model="row.qty" :min="0.001" :controls="false" style="width: 80px" /></td>
-            <td>
+            <td v-if="receiveForm.purchaseOrderId">
               <span v-if="diffOf(row) === null" class="mini">—</span>
               <span v-else-if="diffOf(row) === 0" class="chip c-green">✓ 一致</span>
               <span v-else class="chip c-amber">{{ diffOf(row)! > 0 ? '+' : '' }}{{ diffOf(row) }} 按实收</span>

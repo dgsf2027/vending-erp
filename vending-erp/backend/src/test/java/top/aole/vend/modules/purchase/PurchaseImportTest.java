@@ -44,6 +44,45 @@ class PurchaseImportTest {
             return new MockMultipartFile("file", "test.xlsx", "application/octet-stream", out.toByteArray());
         }
     }
+    private MockMultipartFile boxFile(String[]... rows) throws Exception {
+        try (Workbook book = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Sheet sheet = book.createSheet("商品明细");
+            String[] headers = {"商品编码", "商品名称", "整件规格", "总件数", "采购数量", "整件价格", "总价格"};
+            Row header = sheet.createRow(0);
+            for (int c = 0; c < headers.length; c++) header.createCell(c).setCellValue(headers[c]);
+            for (int i = 0; i < rows.length; i++) {
+                Row row = sheet.createRow(i + 1);
+                for (int c = 0; c < rows[i].length; c++) row.createCell(c).setCellValue(rows[i][c]);
+            }
+            book.write(out);
+            return new MockMultipartFile("file", "box.xlsx", "application/octet-stream", out.toByteArray());
+        }
+    }
+    @Test void sevenColumnReceiptMatchesWorkbookAndDerivesUnitPrice() throws Exception {
+        PurchaseImportService.Preview p = service.preview(boxFile(new String[]{"SP001", "表格中的名字", "24", "2", "48", "105", "210"}), "receipt");
+        assertTrue(p.getErrors().isEmpty());
+        PurchaseImportService.Line row = p.getRows().get(0);
+        assertEquals(7L, row.getProductId());
+        assertEquals("测试商品", row.getProductName());
+        assertEquals("表格中的名字", row.getSourceName());
+        assertEquals(new BigDecimal("48"), row.getQty());
+        assertEquals(new BigDecimal("4.3750"), row.getUnitPrice());
+        assertEquals(0, new BigDecimal("210").compareTo(row.getTotalPrice()));
+        verify(mapper).selectList(any()); verifyNoMoreInteractions(mapper);
+    }
+    @Test void sevenColumnReceiptRejectsMismatchedQuantityAndAmount() throws Exception {
+        PurchaseImportService.Preview p = service.preview(boxFile(
+                new String[]{"SP001", "测试商品", "24", "2", "47", "105", "210"},
+                new String[]{"SP002", "商品二", "24", "2", "48", "105", "209"}), "receipt");
+        assertEquals(2, p.getErrors().size());
+        assertTrue(p.getErrors().get(0).contains("采购数量应等于"));
+        assertTrue(p.getErrors().get(1).contains("总价格应等于"));
+    }
+    @Test void sevenColumnReceiptRejectsUnrepresentableUnitPrice() throws Exception {
+        PurchaseImportService.Preview p = service.preview(boxFile(
+                new String[]{"SP001", "测试商品", "3", "100", "300", "0.01", "1"}), "receipt");
+        assertTrue(p.getErrors().get(0).contains("无法还原总价格"));
+    }
     @Test void receiptResolvesSkuAndPreservesDecimalsWithoutWriting() throws Exception {
         PurchaseImportService.Preview p = service.preview(file("receipt", new String[]{"SP001", "1.125", "2.1234"}), "receipt");
         assertTrue(p.getErrors().isEmpty());
@@ -91,7 +130,15 @@ class PurchaseImportTest {
             new PurchaseImportController(service).template(kind, response);
             try (Workbook book = new XSSFWorkbook(new java.io.ByteArrayInputStream(response.getContentAsByteArray())); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
                 Row row = book.getSheetAt(0).createRow(1);
-                row.createCell(0).setCellValue("SP001"); row.createCell(1).setCellValue(2); row.createCell(2).setCellValue(1.25);
+                row.createCell(0).setCellValue("SP001");
+                if (kind.equals("receipt")) {
+                    row.createCell(1).setCellValue("测试商品"); row.createCell(2).setCellValue(24);
+                    row.createCell(3).setCellValue(2); row.createCell(4).setCellValue(48);
+                    row.createCell(5).setCellValue(105); row.createCell(6).setCellValue(210);
+                    assertEquals("总价格", book.getSheetAt(0).getRow(0).getCell(6).getStringCellValue());
+                } else {
+                    row.createCell(1).setCellValue(2); row.createCell(2).setCellValue(1.25);
+                }
                 book.write(out);
                 assertTrue(service.preview(new MockMultipartFile("file", "template.xlsx", "", out.toByteArray()), kind).getErrors().isEmpty());
             }
