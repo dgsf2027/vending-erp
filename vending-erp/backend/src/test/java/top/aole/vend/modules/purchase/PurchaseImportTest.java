@@ -2,6 +2,7 @@ package top.aole.vend.modules.purchase;
 
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockMultipartFile;
@@ -69,6 +70,27 @@ class PurchaseImportTest {
         assertEquals(new BigDecimal("4.3750"), row.getUnitPrice());
         assertEquals(0, new BigDecimal("210").compareTo(row.getTotalPrice()));
         verify(mapper).selectList(any()); verifyNoMoreInteractions(mapper);
+    }
+    @Test void legacyXlsWorksForReceiptAndOrder() throws Exception {
+        for (String kind : new String[]{"receipt", "order"}) {
+            try (Workbook book = new HSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                Sheet sheet = book.createSheet("商品明细");
+                Row header = sheet.createRow(0);
+                header.createCell(0).setCellValue("商品编码");
+                header.createCell(1).setCellValue("receipt".equals(kind) ? "实收数量" : "订购数量");
+                header.createCell(2).setCellValue("receipt".equals(kind) ? "进货单价" : "预计单价");
+                Row row = sheet.createRow(1);
+                row.createCell(0).setCellValue("SP001");
+                row.createCell(1).setCellValue("2");
+                row.createCell(2).setCellValue("1.25");
+                book.write(out);
+                PurchaseImportService.Preview preview = service.preview(
+                        new MockMultipartFile("file", "历史明细.xls", "application/vnd.ms-excel", out.toByteArray()), kind);
+                assertTrue(preview.getErrors().isEmpty());
+                assertEquals(1, preview.getRows().size());
+                assertEquals(new BigDecimal("2"), preview.getRows().get(0).getQty());
+            }
+        }
     }
     @Test void sevenColumnReceiptRejectsMismatchedQuantityAndAmount() throws Exception {
         PurchaseImportService.Preview p = service.preview(boxFile(

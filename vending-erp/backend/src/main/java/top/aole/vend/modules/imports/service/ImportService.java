@@ -201,7 +201,7 @@ public class ImportService {
         }
     }
 
-    private static String excelSuffix(String fileName) {
+    static String excelSuffix(String fileName) {
         return fileName != null && fileName.toLowerCase(java.util.Locale.ROOT).endsWith(".xls") ? ".xls" : ".xlsx";
     }
 

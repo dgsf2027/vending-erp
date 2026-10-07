@@ -477,13 +477,13 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
         <div class="text-11px text-gray-400 mb-8px">落表:{{ ch.target }} · 原始文件自动归档 · 整批可回滚</div>
         <el-upload
           :show-file-list="false"
-          :accept="ch.type === '系统补货记录' ? '.xls,.xlsx' : '.xlsx'"
+          accept=".xls,.xlsx"
           :http-request="makeUploader(ch.type)"
           drag
         >
           <div class="py-10px text-13px">
             <el-icon v-if="uploading === ch.type" class="is-loading"><i /></el-icon>
-            {{ uploading === ch.type ? '解析中…' : ch.type === '系统补货记录' ? '拖 .xls / .xlsx 到这里,或点击选择' : '拖 .xlsx 到这里,或点击选择' }}
+            {{ uploading === ch.type ? '解析中…' : '拖 .xls / .xlsx 到这里,或点击选择' }}
           </div>
         </el-upload>
       </el-card>
@@ -849,7 +849,7 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
         <div v-if="wizardStatus?.step1.done" class="text-13px mb-8px">
           ✅ 已完成(批次 {{ wizardStatus.step1.batchNo }})
         </div>
-        <el-upload v-if="!step1Preview" :show-file-list="false" accept=".xlsx" :http-request="wizardUploader(1)" drag>
+        <el-upload v-if="!step1Preview" :show-file-list="false" accept=".xls,.xlsx" :http-request="wizardUploader(1)" drag>
           <div class="py-16px text-13px">
             {{ wizardUploading ? '解析中…' : '拖老 Excel 套表到这里(读「商品档案」+「配比底稿」+「销售明细」)' }}
           </div>
@@ -896,7 +896,7 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
 
       <!-- 第②步 -->
       <template v-else-if="wizardStep === 1">
-        <el-upload v-if="!step2Preview" :show-file-list="false" accept=".xlsx" :http-request="wizardUploader(2)" drag>
+        <el-upload v-if="!step2Preview" :show-file-list="false" accept=".xls,.xlsx" :http-request="wizardUploader(2)" drag>
           <div class="py-16px text-13px">
             {{ wizardUploading ? '解析中…' : '再拖同一个套表文件(读「采购入库表」→ 生成期初采购单据并过账)' }}
           </div>
@@ -924,7 +924,7 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
 
       <!-- 第③步 -->
       <template v-else-if="wizardStep === 2">
-        <el-upload v-if="!step3Preview" :show-file-list="false" accept=".xlsx" :http-request="wizardUploader(3)" drag>
+        <el-upload v-if="!step3Preview" :show-file-list="false" accept=".xls,.xlsx" :http-request="wizardUploader(3)" drag>
           <div class="py-16px text-13px">
             {{ wizardUploading ? '解析中…' : '再拖同一个套表文件(读「销售明细」→ 复用通道1入销售记录,订单号去重)' }}
           </div>

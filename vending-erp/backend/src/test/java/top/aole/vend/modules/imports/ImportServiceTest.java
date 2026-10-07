@@ -216,7 +216,35 @@ class ImportServiceTest {
         }
     }
 
+    private byte[] xls(Object[][] rows) throws Exception {
+        try (HSSFWorkbook workbook = new HSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Sheet sheet = workbook.createSheet("data");
+            for (int i = 0; i < rows.length; i++) {
+                Row row = sheet.createRow(i);
+                for (int j = 0; j < rows[i].length; j++) {
+                    if (rows[i][j] != null) row.createCell(j).setCellValue(rows[i][j].toString());
+                }
+            }
+            workbook.write(out);
+            return out.toByteArray();
+        }
+    }
+
     // ============================== 通道1:出货明细 ==============================
+
+    @Test
+    void saleLegacyXlsCanPreviewAndConfirm() throws Exception {
+        machine("DEV-XLS-SALE", "销售测试机");
+        byte[] content = xls(new Object[][]{
+                SALE_HEADER,
+                {"XLS-ORDER-1", "饮料", null, "1", "2", "DEV-XLS-SALE", "3.00", "正常订单", "微信", "2026-07-01 12:00:00"},
+        });
+        ImportDtos.PreviewResp preview = importService.upload(ImportBatch.TYPE_SALE, "出货明细.xls", content);
+        assertTrue(preview.isColumnsOk());
+        ImportDtos.CommitResp result = importService.confirm(preview.getToken(), OP);
+        assertEquals(1, result.getRowOk());
+        assertTrue(importBatchMapper.selectById(result.getBatchId()).getArchivePath().endsWith(".xls"));
+    }
 
     @Test
     void sale_import_then_reimport_isIdempotent() throws Exception {
@@ -587,6 +615,21 @@ class ImportServiceTest {
     }
 
     // ============================== 通道3:商品列表 ==============================
+
+    @Test
+    void productListLegacyXlsCanPreviewAndConfirm() throws Exception {
+        Product product = product("旺仔牛奶", "6901919", null);
+        byte[] content = xls(new Object[][]{
+                {"商品编号", "商品条形码", "商品名称", "售价", "商品分类"},
+                {"XLS-G001", "6901919", "旺仔牛奶245ml", "4.5", "饮料"},
+        });
+        ImportDtos.PreviewResp preview = importService.upload(ImportBatch.TYPE_PRODUCT_LIST, "商品列表.xls", content);
+        assertTrue(preview.isColumnsOk());
+        ImportDtos.CommitResp result = importService.confirm(preview.getToken(), OP);
+        assertEquals(1, result.getRowOk());
+        assertEquals(product.getId(), skuAliasMapper.selectOne(new LambdaQueryWrapper<SkuAlias>()
+                .eq(SkuAlias::getAliasCode, "XLS-G001")).getProductId());
+    }
 
     @Test
     void productList_bindsByBarcode_unmatchedGoesPending() throws Exception {

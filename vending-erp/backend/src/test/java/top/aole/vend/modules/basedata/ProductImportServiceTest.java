@@ -4,6 +4,7 @@ import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -81,6 +82,24 @@ class ProductImportServiceTest {
     }
 
     // ---------- 解析 ----------
+
+    @Test
+    void 旧版Xls商品档案直接预览() throws Exception {
+        try (Workbook workbook = new HSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Sheet sheet = workbook.createSheet("商品列表");
+            Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue("商品编号");
+            header.createCell(1).setCellValue("商品名称");
+            Row row = sheet.createRow(1);
+            row.createCell(0).setCellValue("SP-XLS");
+            row.createCell(1).setCellValue("旧版表格商品");
+            workbook.write(out);
+            ProductImportDtos.ParseResp result = service.parse("商品档案.xls", out.toByteArray());
+            assertEquals(1, result.getRowTotal());
+            assertEquals(1, result.getCreateCount());
+            assertEquals(0, result.getErrorCount());
+        }
+    }
 
     @Test
     void 厂家后台导出的表头直接认得() {
