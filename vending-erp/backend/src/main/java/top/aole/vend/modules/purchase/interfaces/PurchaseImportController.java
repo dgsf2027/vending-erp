@@ -28,11 +28,13 @@ public class PurchaseImportController {
         response.setHeader("Content-Disposition", "attachment; filename=purchase-" + kind + "-template.xlsx");
         try (Workbook book = new XSSFWorkbook()) {
             Sheet sheet = book.createSheet("商品明细");
-            String[] headers = {"商品编码", "receipt".equals(kind) ? "实收数量" : "订购数量", "receipt".equals(kind) ? "进货单价" : "预计单价"};
+            String[] headers = "receipt".equals(kind)
+                    ? new String[]{"商品编码", "商品名称", "整件规格", "总件数", "采购数量", "整件价格", "总价格"}
+                    : new String[]{"商品编码", "订购数量", "预计单价"};
             Row row = sheet.createRow(0);
             for (int i = 0; i < headers.length; i++) {
                 row.createCell(i).setCellValue(headers[i]);
-                sheet.setColumnWidth(i, 24 * 256);
+                sheet.setColumnWidth(i, (i == 1 ? 30 : i == 0 ? 24 : 16) * 256);
             }
             CellStyle textStyle = book.createCellStyle();
             textStyle.setDataFormat(book.createDataFormat().getFormat("@"));

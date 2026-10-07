@@ -13,6 +13,7 @@ import top.aole.vend.modules.basedata.infrastructure.mapper.ProductMapper;
 
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -33,8 +34,13 @@ public class PurchaseImportService {
         private String skuCode;
         private Long productId;
         private String productName;
+        private String sourceName;
         private BigDecimal qty;
         private BigDecimal unitPrice;
+        private BigDecimal boxSpec;
+        private BigDecimal boxCount;
+        private BigDecimal boxPrice;
+        private BigDecimal totalPrice;
     }
 
     public static void checkKind(String kind) {
@@ -61,10 +67,13 @@ public class PurchaseImportService {
             }
             String quantity = "receipt".equals(kind) ? "实收数量" : "订购数量";
             String price = "receipt".equals(kind) ? "进货单价" : "预计单价";
-            for (String name : Arrays.asList("商品编码", quantity, price)) {
+            List<String> receiptColumns = Arrays.asList("商品编码", "商品名称", "整件规格", "总件数", "采购数量", "整件价格", "总价格");
+            boolean boxTemplate = "receipt".equals(kind) && columns.keySet().containsAll(receiptColumns) && columns.size() == receiptColumns.size();
+            List<String> required = boxTemplate ? receiptColumns : Arrays.asList("商品编码", quantity, price);
+            for (String name : required) {
                 if (!columns.containsKey(name)) throw new BizException("缺少表头：" + name + "，请使用对应模板");
             }
-            if (columns.size() != 3) throw new BizException("请使用模板的三列明细，供应商和日期在页面填写");
+            if (!boxTemplate && columns.size() != 3) throw new BizException("表头与模板不符，请下载对应的导入模板");
             Set<String> seen = new HashSet<>();
             for (int i = 1; i <= sheet.getLastRowNum(); i++) {
                 Row row = sheet.getRow(i);
@@ -78,8 +87,28 @@ public class PurchaseImportService {
                     line.setSkuCode(text(row.getCell(columns.get("商品编码"))));
                     if (line.getSkuCode().isEmpty()) throw new BizException("商品编码不能为空");
                     if (!seen.add(line.getSkuCode())) throw new BizException("商品编码重复，请合并数量后导入：" + line.getSkuCode());
-                    line.setQty(decimal(text(row.getCell(columns.get(quantity))), quantity, 3, false, false));
-                    line.setUnitPrice(decimal(text(row.getCell(columns.get(price))), price, 4, "order".equals(kind), "order".equals(kind)));
+                    if (boxTemplate) {
+                        line.setSourceName(text(row.getCell(columns.get("商品名称"))));
+                        if (line.getSourceName().isEmpty()) throw new BizException("商品名称不能为空");
+                        line.setBoxSpec(decimal(text(row.getCell(columns.get("整件规格"))), "整件规格", 3, false, false));
+                        line.setBoxCount(decimal(text(row.getCell(columns.get("总件数"))), "总件数", 3, false, false));
+                        line.setQty(decimal(text(row.getCell(columns.get("采购数量"))), "采购数量", 3, false, false));
+                        line.setBoxPrice(decimal(text(row.getCell(columns.get("整件价格"))), "整件价格", 2, false, false));
+                        line.setTotalPrice(decimal(text(row.getCell(columns.get("总价格"))), "总价格", 2, false, false));
+                        if (line.getBoxSpec().multiply(line.getBoxCount()).compareTo(line.getQty()) != 0)
+                            throw new BizException("采购数量应等于整件规格 × 总件数");
+                        if (line.getBoxPrice().multiply(line.getBoxCount()).compareTo(line.getTotalPrice()) != 0)
+                            throw new BizException("总价格应等于整件价格 × 总件数");
+                        BigDecimal unitPrice = line.getTotalPrice().divide(line.getQty(), 4, RoundingMode.HALF_UP);
+                        if (unitPrice.precision() - unitPrice.scale() > 8)
+                            throw new BizException("折算后的进货单价超出系统上限");
+                        if (unitPrice.multiply(line.getQty()).setScale(2, RoundingMode.HALF_UP).compareTo(line.getTotalPrice()) != 0)
+                            throw new BizException("折算单价最多保留 4 位小数后无法还原总价格，请调整整件价格或数量");
+                        line.setUnitPrice(unitPrice);
+                    } else {
+                        line.setQty(decimal(text(row.getCell(columns.get(quantity))), quantity, 3, false, false));
+                        line.setUnitPrice(decimal(text(row.getCell(columns.get(price))), price, 4, "order".equals(kind), "order".equals(kind)));
+                    }
                     result.getRows().add(line);
                 } catch (BizException e) {
                     result.getErrors().add("第 " + (i + 1) + " 行：" + e.getMessage());

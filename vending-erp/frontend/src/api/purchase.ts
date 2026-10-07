@@ -237,8 +237,13 @@ export interface PurchaseImportLine {
   productId: number
   skuCode: string
   productName: string
+  sourceName?: string | null
   qty: number
   unitPrice: number | null
+  boxSpec?: number | null
+  boxCount?: number | null
+  boxPrice?: number | null
+  totalPrice?: number | null
 }
 export interface PurchaseImportPreview {
   rows: PurchaseImportLine[]

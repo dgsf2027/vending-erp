@@ -75,9 +75,19 @@ class PurchaseFlowTest extends BaseIntegrationTest {
             try (org.apache.poi.ss.usermodel.Workbook book = new org.apache.poi.xssf.usermodel.XSSFWorkbook(new java.io.ByteArrayInputStream(response.getContentAsByteArray()));
                  java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
                 org.apache.poi.ss.usermodel.Row row = book.getSheetAt(0).createRow(1);
-                row.createCell(0).setCellValue(productMapper.selectById(productA).getSkuCode());
-                row.createCell(1).setCellValue(2.125);
-                row.createCell(2).setCellValue(3.1234);
+                top.aole.vend.modules.basedata.domain.entity.Product product = productMapper.selectById(productA);
+                row.createCell(0).setCellValue(product.getSkuCode());
+                if ("receipt".equals(kind)) {
+                    row.createCell(1).setCellValue(product.getProductName());
+                    row.createCell(2).setCellValue(24);
+                    row.createCell(3).setCellValue(2);
+                    row.createCell(4).setCellValue(48);
+                    row.createCell(5).setCellValue(105);
+                    row.createCell(6).setCellValue(210);
+                } else {
+                    row.createCell(1).setCellValue(2.125);
+                    row.createCell(2).setCellValue(3.1234);
+                }
                 book.write(out); content = out.toByteArray();
             }
             top.aole.vend.modules.purchase.service.PurchaseImportService.Preview preview = importService.preview(
