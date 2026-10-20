@@ -71,6 +71,26 @@ class PurchasePhotoPreviewServiceTest {
     }
 
     @Test
+    void uncertainHandwritingOffersCandidatesWithoutAutoBinding() {
+        Product product = new Product();
+        product.setId(7L);
+        product.setSkuCode("SP007");
+        product.setProductName("康师傅绿茶1L");
+        product.setBoxSpec(new BigDecimal("12"));
+        product.setUnit("瓶");
+        when(products.selectList(any())).thenReturn(Collections.singletonList(product));
+        when(aliases.selectList(any())).thenReturn(Collections.emptyList());
+        PurchasePhotoPreviewService.Preview preview = service(new LlmProperties()).parseReply(
+                "{\"items\":[{\"name\":\"康师傅绿荼1L\",\"qty\":5,\"unitPrice\":38,"
+                        + "\"amount\":190,\"uncertain\":true}]}");
+        PurchasePhotoPreviewService.Line line = preview.getRows().get(0);
+        assertNull(line.getProductId());
+        assertEquals(1, line.getCandidates().size());
+        assertEquals(7L, line.getCandidates().get(0).getProductId());
+        assertEquals(new BigDecimal("12"), line.getCandidates().get(0).getBoxSpec());
+    }
+
+    @Test
     void missingModelFailsClosedWithoutCallingVision() throws Exception {
         BufferedImage image = new BufferedImage(500, 500, BufferedImage.TYPE_INT_RGB);
         ByteArrayOutputStream out = new ByteArrayOutputStream();

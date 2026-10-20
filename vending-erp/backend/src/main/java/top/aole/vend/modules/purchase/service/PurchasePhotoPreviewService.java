@@ -26,11 +26,13 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /** 拿货单照片只生成可修改的预览；建草稿和过账仍由原采购流程处理。 */
 @Service
@@ -82,6 +84,24 @@ public class PurchasePhotoPreviewService {
         private boolean crossedOut;
         private boolean uncertain;
         private List<String> warnings = new ArrayList<>();
+        private List<Candidate> candidates = new ArrayList<>();
+    }
+
+    @Data
+    public static class Candidate {
+        private Long productId;
+        private String productName;
+        private String skuCode;
+        private BigDecimal boxSpec;
+        private String unit;
+
+        Candidate(Product product) {
+            productId = product.getId();
+            productName = product.getProductName();
+            skuCode = product.getSkuCode();
+            boxSpec = product.getBoxSpec();
+            unit = product.getUnit();
+        }
     }
 
     public Preview preview(MultipartFile file) {
@@ -170,12 +190,15 @@ public class PurchasePhotoPreviewService {
             line.setUncertain(Boolean.TRUE.equals(raw.getBool("uncertain")));
             if (line.getSourceName() != null) {
                 Product product = byName.get(normalize(line.getSourceName()));
-                if (product != null) {
+                // A blurred reading must not silently become a confirmed SKU, even if its text happens to match.
+                if (product != null && !line.isUncertain()) {
                     line.setProductId(product.getId());
                     line.setProductName(product.getProductName());
                     line.setSkuCode(product.getSkuCode());
                     line.setBoxSpec(product.getBoxSpec());
                     line.setUnit(product.getUnit());
+                } else {
+                    line.setCandidates(candidates(line.getSourceName(), byName));
                 }
             }
             if (line.isCrossedOut()) {
@@ -218,6 +241,46 @@ public class PurchasePhotoPreviewService {
         }
         ambiguous.forEach(unique::remove);
         return unique;
+    }
+
+    private static List<Candidate> candidates(String reading, Map<String, Product> names) {
+        String target = normalize(reading);
+        if (target.length() < 2) return new ArrayList<>();
+        Map<Long, Integer> scores = new HashMap<>();
+        Map<Long, Product> products = new HashMap<>();
+        for (Map.Entry<String, Product> entry : names.entrySet()) {
+            String name = entry.getKey();
+            int score = similarity(target, name);
+            if (score < 50) continue;
+            Product product = entry.getValue();
+            products.put(product.getId(), product);
+            scores.merge(product.getId(), score, Math::max);
+        }
+        return scores.entrySet().stream()
+                .sorted(Comparator.<Map.Entry<Long, Integer>>comparingInt(Map.Entry::getValue).reversed()
+                        .thenComparing(Map.Entry::getKey))
+                .limit(3)
+                .map(entry -> new Candidate(products.get(entry.getKey())))
+                .collect(Collectors.toList());
+    }
+
+    private static int similarity(String a, String b) {
+        if (a.equals(b)) return 100;
+        if (a.length() >= 3 && b.length() >= 3 && (a.contains(b) || b.contains(a))) {
+            return 80 * Math.min(a.length(), b.length()) / Math.max(a.length(), b.length());
+        }
+        int[] previous = new int[b.length() + 1];
+        for (int j = 0; j <= b.length(); j++) previous[j] = j;
+        for (int i = 1; i <= a.length(); i++) {
+            int[] current = new int[b.length() + 1];
+            current[0] = i;
+            for (int j = 1; j <= b.length(); j++) {
+                current[j] = Math.min(Math.min(current[j - 1] + 1, previous[j] + 1),
+                        previous[j - 1] + (a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1));
+            }
+            previous = current;
+        }
+        return 100 * (Math.max(a.length(), b.length()) - previous[b.length()]) / Math.max(a.length(), b.length());
     }
 
     private static void putUnique(Map<String, Product> unique, Set<String> ambiguous, String name, Product product) {

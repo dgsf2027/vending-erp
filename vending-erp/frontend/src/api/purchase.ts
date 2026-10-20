@@ -270,6 +270,10 @@ export interface PurchasePhotoLine {
   crossedOut: boolean
   uncertain: boolean
   warnings: string[]
+  candidates: Array<{
+    productId: number; productName: string; skuCode: string
+    boxSpec: number | null; unit: string | null
+  }>
 }
 export interface PurchasePhotoPreview {
   documentNo: string | null

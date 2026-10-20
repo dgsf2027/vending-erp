@@ -82,6 +82,7 @@ function addManualLine() {
     productName: null, skuCode: null, boxSpec: null, unit: null,
     qty: null, unitPrice: null, sourceAmount: null, calculatedAmount: null,
     crossedOut: false, uncertain: true, warnings: [], include: true, unitMode: null,
+    candidates: [],
   })
 }
 
@@ -175,17 +176,25 @@ function apply() {
             <el-table-column label="票面商品 / 档案匹配" min-width="220">
               <template #default="{ row }">
                 <div class="photo-source">{{ row.rowNo }}. <el-input v-if="row.include" v-model="row.sourceName" size="small" placeholder="票面商品名（可修改）" style="width: 175px" /><span v-else>{{ row.sourceName || '未识别商品名' }}</span></div>
+                <div v-if="row.include && !row.productId && row.candidates?.length" class="photo-candidates">
+                  可能是：<el-button v-for="candidate in row.candidates" :key="candidate.productId" link type="primary"
+                    @click="selectProduct(row, candidate.productId)">{{ candidate.productName }}</el-button>
+                </div>
                 <ProductSelect v-if="row.include" :model-value="row.productId" placeholder="核对或搜索商品档案" @update:model-value="selectProduct(row, $event)" />
                 <div v-if="row.include" class="photo-unit">
                   <el-select v-model="row.unitMode" placeholder="票面数量单位" style="width: 130px">
-                    <el-option label="基本单位" value="base" />
-                    <el-option label="整箱" value="box" />
+                    <el-option :label="`${row.unit || '瓶/件'}（票面数量直接入库）`" value="base" />
+                    <el-option label="整箱（按每箱数量换算）" value="box" />
                   </el-select>
                   <el-input-number v-if="row.unitMode === 'box'" v-model="row.boxSpec" :controls="false" :min="1" :precision="0"
                     size="small" style="width: 110px" placeholder="每箱数量" />
                 </div>
                 <div v-if="row.include && row.unitMode" class="mini">
-                  入库 {{ purchaseQty(row) }} {{ row.unit || '基本单位' }} · 折算单价 ¥{{ basicPrice(row).toFixed(4) }}
+                  {{ row.unitMode === 'box' ? `${row.qty ?? '？'} 箱 × ${row.boxSpec ?? '？'} ${row.unit || '瓶/件'}/箱 = ` : '' }}
+                  入库 {{ purchaseQty(row) }} {{ row.unit || '瓶/件' }} · 折算单价 ¥{{ basicPrice(row).toFixed(4) }}
+                </div>
+                <div v-if="row.include && row.productId && row.boxSpec && !row.unitMode" class="photo-warning">
+                  票面 {{ row.qty ?? '？' }} 是 {{ row.unit || '瓶/件' }}，还是整箱？每箱 {{ row.boxSpec }} {{ row.unit || '瓶/件' }}，请确认。
                 </div>
                 <span v-if="row.crossedOut" class="mini">票面疑似划掉，默认排除</span>
                 <div v-for="warning in row.warnings" :key="warning" class="photo-warning">{{ warning }}</div>
@@ -222,6 +231,8 @@ function apply() {
 .photo-source { font-size: 12px; margin-bottom: 4px; }
 .photo-unit { display: flex; gap: 6px; margin: 6px 0 3px; }
 .photo-warning { color: #b66300; font-size: 11px; margin-top: 3px; }
+.photo-candidates { font-size: 11px; color: #8a5a12; margin: 4px 0; }
+.photo-candidates .el-button { margin-left: 4px; font-size: 11px; }
 .photo-totals { font-size: 13px; font-weight: 600; margin: 12px 0; }
 @media (max-width: 800px) { .photo-layout { grid-template-columns: 1fr; } .photo-original { max-height: 260px; } }
 </style>
