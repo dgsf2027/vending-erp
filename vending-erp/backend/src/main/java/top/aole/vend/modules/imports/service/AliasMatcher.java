@@ -37,6 +37,8 @@ public class AliasMatcher {
     public class Session {
         private final Map<String, Long> byBarcode = new HashMap<>();
         private final Map<String, Long> byName = new HashMap<>();
+        private final java.util.Set<String> ambiguousBarcodes = new java.util.HashSet<>();
+        private final java.util.Set<String> ambiguousNames = new java.util.HashSet<>();
         /** 本批已 upsert 过的 pending 键,避免同批同名反复查库 */
         private final Map<String, Long> pendingSeen = new HashMap<>();
 
@@ -44,17 +46,27 @@ public class AliasMatcher {
             List<SkuAlias> all = skuAliasMapper.selectList(null);
             for (SkuAlias a : all) {
                 if (StrUtil.isNotBlank(a.getAliasBarcode())) {
-                    byBarcode.put(a.getAliasBarcode(), a.getProductId());
+                    addUnique(byBarcode, ambiguousBarcodes, a.getAliasBarcode().trim(), a.getProductId());
                 }
                 if (StrUtil.isNotBlank(a.getAliasName())) {
-                    byName.put(a.getAliasName(), a.getProductId());
+                    addUnique(byName, ambiguousNames, a.getAliasName().trim(), a.getProductId());
                 }
+            }
+        }
+
+        private void addUnique(Map<String, Long> map, java.util.Set<String> ambiguous, String key, Long productId) {
+            if (ambiguous.contains(key)) return;
+            Long previous = map.putIfAbsent(key, productId);
+            if (previous != null && !previous.equals(productId)) {
+                map.remove(key);
+                ambiguous.add(key);
             }
         }
 
         /** 条码为主、名称兜底;不中返回 null */
         public Long match(String barcode, String name) {
             if (StrUtil.isNotBlank(barcode)) {
+                if (ambiguousBarcodes.contains(barcode.trim())) return null;
                 Long hit = byBarcode.get(barcode.trim());
                 if (hit != null) {
                     return hit;

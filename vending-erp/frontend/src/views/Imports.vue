@@ -20,6 +20,7 @@ import {
 } from '@/api/imports'
 import AliasPendingDrawer from '@/components/basedata/AliasPendingDrawer.vue'
 import ImportFileDrawer from '@/components/imports/ImportFileDrawer.vue'
+import SmartProductImportDialog from '@/components/basedata/SmartProductImportDialog.vue'
 import LlmTransparencyBadge from '@/components/ai/LlmTransparencyBadge.vue'
 import { isMobile } from '@/utils/viewport'
 
@@ -54,8 +55,8 @@ const channels: Channel[] = [
   {
     type: '商品列表',
     icon: '🏷️',
-    title: '通道③ 商品列表 → 别名初始化',
-    desc: '后台商品编号+条码批量挂到 SKU(靠条码匹配);挂不上的进待绑定队列',
+    title: '通道③ 商品列表 → 自动建档与编号',
+    desc: '已有商品自动匹配，新商品自动分配 ERP 编码。上传后集中核对单位、箱规和待确认项。',
     target: 'sku_alias',
   },
 ]
@@ -67,9 +68,16 @@ const previewVisible = ref(false)
 const uploading = ref<string | null>(null)
 const confirming = ref(false)
 const lastResult = ref<CommitResp | null>(null)
+const smartVisible = ref(false)
+const smartFile = ref<File | null>(null)
 
 function makeUploader(type: ImportFileType) {
   return async (options: UploadRequestOptions) => {
+    if (type === '商品列表') {
+      smartFile.value = options.file as File
+      smartVisible.value = true
+      return
+    }
     uploading.value = type
     try {
       preview.value = await importsApi.upload(type, options.file as File)
@@ -458,7 +466,7 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
     <div class="ledger-crumb">园区小卖 ERP / 日常台账 / 导入中心</div>
     <div class="ledger-title">
       <h2>导入中心</h2>
-      <span class="sub">货流两段式:出货明细回流销售账,补货记录生成转移单,商品列表挂别名</span>
+      <span class="sub">出货明细回流销售账，补货记录生成转移单，商品列表自动建档与编号</span>
     </div>
     <!-- ⚡ 任务来源 + 编号流程条(设计思维律②:领着人干活) -->
     <el-alert type="info" :closable="false" class="mb-12px">
@@ -474,7 +482,7 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
         <div class="text-28px">{{ ch.icon }}</div>
         <div class="font-bold text-14px mt-4px">{{ ch.title }}</div>
         <div class="text-12px text-gray-500 mt-6px" style="min-height: 54px">{{ ch.desc }}</div>
-        <div class="text-11px text-gray-400 mb-8px">落表:{{ ch.target }} · 原始文件自动归档 · 整批可回滚</div>
+        <div class="text-11px text-gray-400 mb-8px">{{ ch.type === '商品列表' ? '原始表格归档 · 重复导入沿用原编码' : '原始文件自动归档 · 整批可回滚' }}</div>
         <el-upload
           :show-file-list="false"
           accept=".xls,.xlsx"
@@ -616,7 +624,7 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
                 <template #dropdown>
                   <el-dropdown-menu>
                     <el-dropdown-item command="errors">错误明细</el-dropdown-item>
-                    <el-dropdown-item v-if="row.rowFail > 0" command="fix">修改失败行并重导</el-dropdown-item>
+                    <el-dropdown-item v-if="row.rowFail > 0 && !row.columnMapJson?.includes('smart-product')" command="fix">修改失败行并重导</el-dropdown-item>
                     <el-dropdown-item command="prices">改价清单</el-dropdown-item>
                     <el-dropdown-item
                       v-if="row.fileType === '出货明细' && row.batchStatus === '已导入'"
@@ -646,6 +654,7 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
     </el-card>
 
     <ImportFileDrawer v-model="fileVisible" :batch="fileBatch" />
+    <SmartProductImportDialog v-model:visible="smartVisible" :initial-file="smartFile" @saved="loadBatches" />
 
     <!-- 预览确认对话框(两步式第②步) -->
     <el-dialog v-model="previewVisible" :title="`预览核对 · ${preview?.fileName ?? ''}`" width="min(1120px, 96vw)" top="4vh">

@@ -63,7 +63,9 @@ public class ProductImportService {
      * 第一个元素是模板/导出用的规范名;后面是兼容写法(厂家后台商品列表导出直接可用,不用改表头)。
      */
     private static final String[][] COLUMNS = {
-            {"商品编号", "商品编码", "sku编码", "sku", "编码", "编号"},
+            {"商品编号", "后台商品编号", "平台商品编号", "商品编码", "sku编码", "sku", "编码", "编号"},
+            {"ERP编码", "内部编码"},
+            {"规格", "容量", "规格型号"},
             {"商品名称", "商品名", "名称", "采购商品名", "品名"},
             {"商品条形码", "条形码", "条码", "barcode"},
             {"商品分类", "分类", "品类", "类别"},
@@ -105,6 +107,14 @@ public class ProductImportService {
     // ============================== 解析(上传即出列表) ==============================
 
     public ProductImportDtos.ParseResp parse(String fileName, byte[] content) {
+        return parse(fileName, content, false);
+    }
+
+    public ProductImportDtos.ParseResp parseForSmart(String fileName, byte[] content) {
+        return parse(fileName, content, true);
+    }
+
+    private ProductImportDtos.ParseResp parse(String fileName, byte[] content, boolean smart) {
         ParsedSheet sheet = excelParser.parse(new ByteArrayInputStream(content));
 
         ProductImportDtos.ParseResp resp = new ProductImportDtos.ParseResp();
@@ -115,6 +125,7 @@ public class ProductImportService {
         Map<String, String> colMap = matchHeaders(sheet.getHeaders());
         List<String> missing = new ArrayList<>();
         for (String required : REQUIRED) {
+            if (smart && "商品编号".equals(required)) continue;
             if (!colMap.containsKey(required)) {
                 missing.add("「" + required + "」");
             }
@@ -124,7 +135,7 @@ public class ProductImportService {
                     + "文件里读到的表头:" + String.join(" / ", sheet.getHeaders())
                     + "。可下载模板对照,或把表头改成模板里的写法。");
         }
-        for (String[] col : COLUMNS) {
+        for (String[] col : smart ? new String[0][] : COLUMNS) {
             if (!REQUIRED.contains(col[0]) && !colMap.containsKey(col[0])) {
                 // 状态列缺席不是"留空"那么简单:新建按在售、更新保持原状,说清楚免得以为会被刷掉
                 resp.getWarnings().add("状态".equals(col[0])
@@ -136,8 +147,8 @@ public class ProductImportService {
             throw new BizException("文件里没有数据行(只有表头?)");
         }
 
-        Map<String, Product> existing = loadExistingByCode();
-        List<AliasPending> pendings = loadPendings();
+        Map<String, Product> existing = smart ? new HashMap<>() : loadExistingByCode();
+        List<AliasPending> pendings = smart ? new ArrayList<>() : loadPendings();
         Set<Long> pendingHit = new HashSet<>();
         Set<String> seenCodes = new HashSet<>();
 
@@ -156,6 +167,19 @@ public class ProductImportService {
             row.setMinDisplayQty(cell(raw, colMap, "机内上限"));
             row.setProductStatus(cell(raw, colMap, "状态"));
             row.setRemark(cell(raw, colMap, "备注"));
+
+            if (smart) {
+                row.setSourceCode(row.getSkuCode());
+                row.setSkuCode(cell(raw, colMap, "ERP编码"));
+                row.setSourceName(row.getProductName());
+                row.setSourceSpec(cell(raw, colMap, "规格"));
+                if (StrUtil.isNotBlank(row.getSourceSpec()) && StrUtil.isNotBlank(row.getProductName())
+                        && !ProductCatalogMatcher.normalize(row.getProductName()).contains(ProductCatalogMatcher.normalize(row.getSourceSpec()))) {
+                    row.setProductName(row.getProductName() + " " + row.getSourceSpec());
+                }
+                resp.getRows().add(row);
+                continue;
+            }
 
             String dupError = seenCodes.add(StrUtil.nullToEmpty(row.getSkuCode()))
                     ? null : "本次文件里「" + row.getSkuCode() + "」出现了不止一次";
@@ -352,7 +376,7 @@ public class ProductImportService {
      * <p>留空 = 不表态:新建走 create 的默认「在售」,更新则保持档案现状不动
      * ——否则一张不带状态列的表会把清仓/停售的商品整批刷回在售。
      */
-    private void applyStatus(ProductImportDtos.Row row, Long productId, String current, String operator) {
+    void applyStatus(ProductImportDtos.Row row, Long productId, String current, String operator) {
         String target = row.getProductStatus();
         if (target == null || target.equals(current)) {
             return;
@@ -382,7 +406,7 @@ public class ProductImportService {
         return null;
     }
 
-    private Product newProductOf(ProductImportDtos.Row row) {
+    Product newProductOf(ProductImportDtos.Row row) {
         Product p = new Product();
         p.setSkuCode(row.getSkuCode());
         p.setProductName(row.getProductName());
@@ -404,7 +428,7 @@ public class ProductImportService {
      * MyBatis-Plus updateById 默认跳过 null 字段,所以文件里没有的列不会被清空
      * (ProductService.update 另外会挡住改 sku_code、挡住绕过状态流转)。
      */
-    private Product patchOf(ProductImportDtos.Row row) {
+    Product patchOf(ProductImportDtos.Row row) {
         Product p = new Product();
         p.setProductName(row.getProductName());
         p.setBarcode(blankToNull(row.getBarcode()));
@@ -472,6 +496,15 @@ public class ProductImportService {
             map.put(p.getSkuCode(), p);
         }
         return map;
+    }
+
+    String validateFields(ProductImportDtos.Row row) {
+        if (StrUtil.isBlank(row.getProductName())) return "商品名称不能为空";
+        if (row.getProductName().length() > 128) return "商品名称最多 128 个字符";
+        if (row.getSourceCode() != null && row.getSourceCode().length() > 64) return "后台商品编号最多 64 个字符";
+        if (row.getBarcode() != null && row.getBarcode().length() > 64) return "条码最多 64 个字符";
+        String error = firstNumberError(row);
+        return error != null ? error : statusError(row);
     }
 
     /** 规范列名 → 文件实际表头;大小写/空格/全角括号都当成同一个写法 */

@@ -11,7 +11,7 @@ import {
 } from '@/api/basedata'
 import { productProfit } from '@/utils/product-profit'
 import ProductFormDialog from './ProductFormDialog.vue'
-import ProductImportDialog from './ProductImportDialog.vue'
+import ProductImportDialog from './SmartProductImportDialog.vue'
 import AliasManageDialog from './AliasManageDialog.vue'
 import AliasPendingDrawer from './AliasPendingDrawer.vue'
 

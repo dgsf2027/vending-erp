@@ -83,6 +83,7 @@ export interface CommitResp {
 }
 
 export interface ImportBatch {
+  columnMapJson?: string | null
   id: number
   batchNo: string
   fileName: string
