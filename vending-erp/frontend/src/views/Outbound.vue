@@ -372,7 +372,7 @@ async function submitManual() {
         <b>📄 转移单(仓库 → 机器)</b>
         <span class="mini">唯一生产者 = 导入中心通道②《系统补货记录》;负数补货 = 退库取回</span>
         <span style="margin-left: auto; display: flex; gap: 8px">
-          <el-button size="small" type="primary" plain @click="$router.push('/import')">📂 去导入中心导《系统补货记录》</el-button>
+          <el-button size="small" type="primary" plain @click="$router.push('/import/replenishment')">📂 导入系统补货记录</el-button>
           <el-button size="small" @click="openManual">✍️ 手工录入(兜底)</el-button>
         </span>
       </div>

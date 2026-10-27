@@ -86,7 +86,7 @@ const check = async (fn, message) => {
     return ok(route, { records: [], total: 0, current: 1, size: 10 });
   });
   try {
-    await page.goto(base + '/import');
+    await page.goto(base + '/import/products');
     const dialog = page.locator('#product-import-workspace');
     await dialog.getByText('商品导入工作台', { exact: true }).waitFor();
     await dialog.getByRole('columnheader', { name: 'ERP 编码 / 原始标识' }).waitFor();
@@ -132,11 +132,12 @@ const check = async (fn, message) => {
     assert.equal((await downloadPromise).suggestedFilename(), '商品编码对照.csv');
     await page.screenshot({ path: path.join(out, 'smart-product-result.png'), fullPage: true });
     passed.push('partial failure retains only failed row, successful codes visible and downloadable');
-    const sale = page.locator('.el-card').filter({ hasText: '通道① 出货明细' });
+    await page.goto(base + '/import/sales');
+    const sale = page.locator('.channel-workbench');
     await sale.locator('input[type=file]').setInputFiles({ name: '销售.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from('synthetic') });
     await page.getByRole('dialog', { name: /预览核对/ }).waitFor(); assert.equal(genericUploads, 1);
     passed.push('sales import retains original flow');
-    await page.goto(base + '/import');
+    await page.goto(base + '/import/products');
     await dialog.getByRole('button', { name: '＋ 手工添加商品', exact: true }).click();
     await dialog.getByRole('textbox', { name: '商品名称第1行', exact: true }).fill('测试手工新商品');
     await dialog.getByRole('textbox', { name: '基本单位第1行', exact: true }).fill('瓶');

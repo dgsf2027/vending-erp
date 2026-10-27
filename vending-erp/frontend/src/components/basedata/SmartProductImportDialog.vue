@@ -107,7 +107,7 @@ async function template() {
   catch (error) { actionError.value = '模板下载失败：' + errorText(error) }
   finally { busy.value = false }
 }
-defineExpose({ importFile: replaceFile })
+defineExpose({ importFile: replaceFile, busy, hasPendingRows: computed(() => rows.value.length > 0) })
 function edit(row: ProductImportRow, identity = false) {
   dirty.value.add(row.rowNo!)
   if (identity) {

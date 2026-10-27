@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
+import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadRequestOptions } from 'element-plus'
 import {
@@ -25,41 +26,75 @@ import LlmTransparencyBadge from '@/components/ai/LlmTransparencyBadge.vue'
 import { isMobile } from '@/utils/viewport'
 
 /**
- * 导入中心(M1-3):全系统数据入口。对照 mockup p5 导入部分。
- * 三通道卡片(上传→预览→确认)+ 批次历史(回滚/错误)+ 待绑定队列 + 改价待确认。
+ * 导入首页仅展示入口；独立通道页面复用预览、归档与差异处理。
+ * 通道隔离由 ImportChannelPage 的 key 保证，历史由服务端按 fileType 分页。
  */
 
 interface Channel {
+  key: string
+  name: string
+  path: string
   type: ImportFileType
   icon: string
   title: string
   desc: string
-  target: string
+  purpose: string
+  outcome: string
+  columns: string[]
+  tags: string[]
+  relatedPath: string
+  relatedLabel: string
 }
 
+const props = defineProps<{ channel?: string }>()
+const router = useRouter()
 const channels: Channel[] = [
   {
+    key: 'sales', name: '销售导入', path: '/import/sales',
     type: '出货明细',
     icon: '💰',
-    title: '通道① 出货明细 → 销售记录',
-    desc: '按订单号+订单类型去重,重复导入不怕;别名条码为主、名称兜底,不认识的进待绑定队列',
-    target: 'sale_record',
+    title: '通道① · 销售导入',
+    desc: '导入售卖机后台的出货明细，核对后生成销售记录。',
+    purpose: '从后台导出《出货明细》，上传 .xls 或 .xlsx 文件。',
+    outcome: '按订单号和订单类型去重；无法匹配的商品进入待绑定队列。',
+    columns: ['订单号', '商品名称', '出货数量', '商品金额(元)', '设备ID', '订单类型', '出货时间'],
+    tags: ['出货明细', '重复自动跳过', '销售记录'],
+    relatedPath: '/reports', relatedLabel: '查看销售报表',
   },
   {
+    key: 'replenishment', name: '补货导入', path: '/import/replenishment',
     type: '系统补货记录',
     icon: '🚚',
-    title: '通道② 补货记录 → 出库上架转移单',
-    desc: '直接上传后台导出的 .xls 或 .xlsx；按设备、货道、商品和时间逐行核对。本次补货数量为正数是上架，负数是取回。',
-    target: 'doc(出库上架)',
+    title: '通道② · 补货导入',
+    desc: '导入设备补货记录，核对后生成出库上架或退库单。',
+    purpose: '从后台导出《系统补货记录》，按设备、货道、商品和时间核对。',
+    outcome: '本次补货数为正数表示上架，负数表示取回；商品价格是销售价。',
+    columns: ['设备ID', '货道号', '商品名称', '本次补货数', '补货时间'],
+    tags: ['补货记录', '设备与货道', '上架 / 退库'],
+    relatedPath: '/outbound', relatedLabel: '查看出库上架',
   },
   {
+    key: 'products', name: '商品导入', path: '/import/products',
     type: '商品列表',
     icon: '🏷️',
-    title: '通道③ 商品列表 → 自动建档与编号',
-    desc: '下方直接填写或上传表格；已有商品自动匹配，新商品确认后自动编号。',
-    target: 'sku_alias',
+    title: '通道③ · 商品导入',
+    desc: '上传商品表或直接填写，新商品自动编号，已有商品沿用原码。',
+    purpose: '可下载模板、上传商品列表，也可直接手工添加商品。',
+    outcome: '核对匹配结果、单位和箱规，确认后保存商品档案与编号。',
+    columns: [], tags: ['商品档案', '自动编号', '手工录入'],
+    relatedPath: '/products', relatedLabel: '查看已有商品编码',
   },
 ]
+const activeChannel = computed(() => channels.find(ch => ch.key === props.channel))
+const showHistory = ref(false)
+const historyAnchor = ref<HTMLElement>()
+async function openAllHistory() {
+  showHistory.value = !showHistory.value
+  if (showHistory.value) {
+    await nextTick()
+    historyAnchor.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+}
 
 // ---------- 上传 → 预览 → 确认 ----------
 
@@ -69,24 +104,24 @@ const uploading = ref<string | null>(null)
 const confirming = ref(false)
 const lastResult = ref<CommitResp | null>(null)
 const productWorkspace = ref<InstanceType<typeof SmartProductImportDialog>>()
-const productWorkspaceAnchor = ref<HTMLElement>()
-function showProductWorkspace() {
-  productWorkspaceAnchor.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-}
+const uploadError = ref('')
 
 function makeUploader(type: ImportFileType) {
   return async (options: UploadRequestOptions) => {
-    if (type === '商品列表') {
-      showProductWorkspace()
-      await productWorkspace.value?.importFile(options.file as File)
-      return
+    if (uploading.value || confirming.value) return
+    if (preview.value) {
+      try { await ElMessageBox.confirm('选择新文件会替换当前尚未导入的预览。', '重新选择文件', { confirmButtonText: '替换预览', cancelButtonText: '保留当前' }) }
+      catch { return }
     }
     uploading.value = type
+    uploadError.value = ''
     try {
       preview.value = await importsApi.upload(type, options.file as File)
       fixResult.value = null // 每次新上传清掉上次的自愈建议
       fixMap.value = {}
       previewVisible.value = true
+    } catch (error) {
+      uploadError.value = (error as Error).message || '读取表格失败，请检查文件后重试'
     } finally {
       uploading.value = null
     }
@@ -151,6 +186,7 @@ async function confirmImport() {
     const resp = await importsApi.confirm(preview.value.token)
     lastResult.value = resp
     previewVisible.value = false
+    preview.value = null
     ElMessage.success(`批次 ${resp.batchNo} 导入完成:成功 ${resp.rowOk} · 重复跳过 ${resp.rowDup} · 失败 ${resp.rowFail}`)
     await loadBatches()
     if (resp.priceChangeCount > 0) openPriceDialog(resp.batchId)
@@ -204,11 +240,11 @@ async function handleBatchAction(action: BatchAction, row: ImportBatch) {
 async function loadBatches() {
   batchLoading.value = true
   try {
-    let page = await importsApi.batches(batchPage.value, 10)
+    let page = await importsApi.batches(batchPage.value, 10, activeChannel.value?.type)
     const lastPage = Math.max(1, Math.ceil(page.total / 10))
     if (batchPage.value > lastPage) {
       batchPage.value = lastPage
-      page = await importsApi.batches(lastPage, 10)
+      page = await importsApi.batches(lastPage, 10, activeChannel.value?.type)
     }
     batches.value = page.records
     batchTotal.value = page.total
@@ -461,52 +497,87 @@ const fmtMoney = (v: number | null | undefined) =>
 
 onMounted(loadBatches)
 
+onBeforeRouteLeave(async () => {
+  if (uploading.value || confirming.value || fixApplying.value || fixSubmitting.value || wizardUploading.value
+      || wizardConfirming.value || productWorkspace.value?.busy || batchActionBusy.value !== null) {
+    ElMessage.warning('正在处理导入，请完成后再切换页面')
+    return false
+  }
+  if (preview.value || productWorkspace.value?.hasPendingRows || fixRowsVisible.value
+      || (wizardVisible.value && (step1Preview.value || step2Preview.value || step3Preview.value))) {
+    try {
+      await ElMessageBox.confirm('还有未提交的录入或预览，离开后需要重新填写或上传。已保存的数据会保留。', '离开导入页面？',
+        { confirmButtonText: '离开页面', cancelButtonText: '继续填写', type: 'warning' })
+    } catch { return false }
+  }
+  return true
+})
+
 const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回滚' ? 'info' : 'warning')
 </script>
 
 <template>
   <div class="ledger-page">
-    <div class="ledger-crumb">园区小卖 ERP / 日常台账 / 导入中心</div>
-    <div class="ledger-title">
-      <h2>导入中心</h2>
-      <span class="sub">出货明细回流销售账，补货记录生成转移单，商品列表自动建档与编号</span>
+    <div class="ledger-crumb">园区小卖 ERP / 日常台账 /
+      <router-link v-if="activeChannel" to="/import">导入中心</router-link><span v-else>导入中心</span>
+      <span v-if="activeChannel"> / {{ activeChannel.name }}</span>
     </div>
-    <!-- ⚡ 任务来源 + 编号流程条(设计思维律②:领着人干活) -->
-    <el-alert type="info" :closable="false" class="mb-12px">
-      <template #title>
-        ⚡ 任务:每天早上导"截至昨日"后台数据(fanmaiji.top 导出)· 流程三步:
-        <b>① 上传文件 → ② 核对预览确认入账 → ③ 处理差异</b>(待绑定 / 改价 / 负库存红灯)
-      </template>
-    </el-alert>
+    <div class="page-heading">
+      <div class="ledger-title">
+        <h2>{{ activeChannel?.title || '导入中心' }}</h2>
+        <span class="sub">{{ activeChannel?.desc || '选择需要处理的资料，进入对应页面完成导入' }}</span>
+      </div>
+      <div v-if="activeChannel" class="page-links">
+        <el-button @click="router.push('/import')">返回导入中心</el-button>
+        <el-button type="primary" plain @click="router.push(activeChannel.relatedPath)">{{ activeChannel.relatedLabel }}</el-button>
+      </div>
+      <el-button v-else @click="openAllHistory">{{ showHistory ? '收起全部导入记录' : '查看全部导入记录' }}</el-button>
+    </div>
 
-    <!-- 三通道卡片 -->
-    <div class="grid grid-cols-3 gap-12px mb-12px import-channels">
-      <el-card v-for="ch in channels" :key="ch.type" shadow="never">
-        <div class="text-28px">{{ ch.icon }}</div>
-        <div class="font-bold text-14px mt-4px">{{ ch.title }}</div>
-        <div class="text-12px text-gray-500 mt-6px" style="min-height: 54px">{{ ch.desc }}</div>
-        <div class="text-11px text-gray-400 mb-8px">{{ ch.type === '商品列表' ? '原始表格归档 · 重复导入沿用原编码' : '原始文件自动归档 · 整批可回滚' }}</div>
-        <el-button v-if="ch.type === '商品列表'" class="workspace-entry" type="primary" @click="showProductWorkspace">进入下方商品录入区</el-button>
-        <el-upload v-else
-          :show-file-list="false"
-          accept=".xls,.xlsx"
-          :http-request="makeUploader(ch.type)"
-          drag
-        >
-          <div class="py-10px text-13px">
-            <el-icon v-if="uploading === ch.type" class="is-loading"><i /></el-icon>
-            {{ uploading === ch.type ? '解析中…' : '拖 .xls / .xlsx 到这里,或点击选择' }}
-          </div>
+    <div v-if="!activeChannel" class="import-channels">
+      <router-link v-for="(ch, index) in channels" :key="ch.key" :to="ch.path" class="channel-entry" :aria-label="'进入' + ch.name">
+        <div class="channel-top"><span class="channel-icon">{{ ch.icon }}</span><span class="channel-number">通道 0{{ index + 1 }}</span></div>
+        <h3>{{ ch.name }}</h3>
+        <p>{{ ch.desc }}</p>
+        <div class="channel-tags"><span v-for="tag in ch.tags" :key="tag">{{ tag }}</span></div>
+        <div class="channel-open">进入{{ ch.name }} <span aria-hidden="true">→</span></div>
+      </router-link>
+    </div>
+
+    <template v-if="activeChannel">
+      <ol class="channel-flow" aria-label="导入步骤">
+        <li><span>1</span><div><b>{{ activeChannel.key === 'products' ? '准备商品资料' : '选择对应表格' }}</b><p>{{ activeChannel.purpose }}</p></div></li>
+        <li><span>2</span><div><b>预览核对</b><p>{{ activeChannel.key === 'products' ? '检查商品匹配、基本单位和每箱数量。' : '核对表头和明细，有问题先调整再继续。' }}</p></div></li>
+        <li><span>3</span><div><b>{{ activeChannel.key === 'products' ? '确认入档' : '确认导入' }}</b><p>提交后查看本通道的处理结果和历史记录。</p></div></li>
+      </ol>
+
+      <div v-if="activeChannel.key === 'products'" id="product-import-workspace">
+        <SmartProductImportDialog ref="productWorkspace" embedded @saved="loadBatches" />
+      </div>
+      <el-card v-else shadow="never" class="channel-workbench mb-12px">
+        <div class="workbench-heading">
+          <div><h3>{{ activeChannel.type }}录入区</h3><p>{{ activeChannel.outcome }}</p></div>
+          <el-button v-if="preview" type="primary" :disabled="!!uploading" @click="previewVisible = true">继续核对并导入</el-button>
+        </div>
+        <el-alert v-if="uploadError" type="error" :closable="false" :title="uploadError" class="mb-12px" />
+        <el-upload class="channel-upload" :show-file-list="false" accept=".xls,.xlsx" :disabled="!!uploading || confirming"
+          :http-request="makeUploader(activeChannel.type)" drag>
+          <div class="upload-label">{{ uploading ? '正在解析表格…' : '点击选择' + activeChannel.type + '表格，或拖拽到这里' }}</div>
+          <div class="upload-note">支持 .xls / .xlsx · 上传后先预览核对 · 原始文件自动归档</div>
         </el-upload>
+        <div class="preview-caption">
+          <b>{{ preview ? preview.fileName + ' · 共 ' + preview.rowTotal + ' 行' : '待导入明细' }}</b>
+          <span>{{ preview ? '以下显示前 20 行，点击“继续核对并导入”确认' : '上传前可先对照下方字段准备资料' }}</span>
+        </div>
+        <el-table :data="preview?.previewRows || []" border size="small" max-height="330">
+          <el-table-column v-for="column in preview ? previewColumns : activeChannel.columns" :key="column" :prop="column" :label="column" min-width="125" show-overflow-tooltip />
+          <template #empty><div class="channel-empty">尚未选择{{ activeChannel.type }}表格，上传后在这里显示明细。</div></template>
+        </el-table>
       </el-card>
-    </div>
-
-    <div ref="productWorkspaceAnchor" id="product-import-workspace">
-      <SmartProductImportDialog ref="productWorkspace" embedded @saved="loadBatches" />
-    </div>
+    </template>
 
     <!-- 期初导入向导入口(M1-6) -->
-    <el-card shadow="never" class="mb-12px">
+    <el-card v-if="!activeChannel" shadow="never" class="mb-12px initial-entry">
       <div class="flex items-center gap-12px flex-wrap">
         <div class="text-24px">🧭</div>
         <div style="flex: 1; min-width: 240px">
@@ -552,9 +623,10 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
     </el-card>
 
     <!-- 批次历史 + 待绑定入口 -->
+    <div v-if="activeChannel || showHistory" ref="historyAnchor" class="channel-history">
     <el-card shadow="never">
       <div class="flex items-center justify-between mb-8px">
-        <b>批次历史</b>
+        <b>{{ activeChannel ? activeChannel.name + '记录' : '全部导入记录' }}</b>
         <div>
           <el-button size="small" @click="pendingVisible = true">⚠️ 待绑定队列</el-button>
           <el-button size="small" @click="loadBatches">刷新</el-button>
@@ -660,11 +732,13 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
         @current-change="loadBatches"
       />
     </el-card>
+    </div>
 
     <ImportFileDrawer v-model="fileVisible" :batch="fileBatch" />
 
     <!-- 预览确认对话框(两步式第②步) -->
-    <el-dialog v-model="previewVisible" :title="`预览核对 · ${preview?.fileName ?? ''}`" width="min(1120px, 96vw)" top="4vh">
+    <el-dialog v-model="previewVisible" :title="`预览核对 · ${preview?.fileName ?? ''}`" width="min(1120px, 96vw)" top="4vh"
+      :close-on-click-modal="!confirming" :close-on-press-escape="!confirming" :show-close="!confirming">
       <template v-if="preview">
         <div class="mb-8px text-13px">
           共 <b>{{ preview.rowTotal }}</b> 行(下方仅预览前 20 行)· 类型:{{ preview.fileType }}
@@ -748,7 +822,7 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
         </div>
       </template>
       <template #footer>
-        <el-button @click="previewVisible = false">取消(不入账)</el-button>
+        <el-button :disabled="confirming" @click="previewVisible = false">取消(不入账)</el-button>
         <el-button type="primary" :disabled="!preview?.columnsOk" :loading="confirming" @click="confirmImport">
           确认导入 → 入账
         </el-button>
@@ -1015,10 +1089,41 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
 </template>
 
 <style scoped>
-.workspace-entry { width: 100%; min-height: 52px; }
-#product-import-workspace { scroll-margin-top: 16px; }
-.import-channels :deep(.el-upload-dragger) { padding: 8px 14px; }
-@media (max-width: 900px) { .import-channels { grid-template-columns: 1fr; } }
+.page-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+.page-heading .ledger-title { margin-bottom: 0; }
+.page-links { display: flex; gap: 8px; flex-wrap: wrap; }
+.page-links .el-button { margin-left: 0; }
+.import-channels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-bottom: 24px; }
+.channel-entry { display: flex; flex-direction: column; background: white; border: 1px solid #dce6df; border-radius: 10px; padding: 24px; color: inherit; text-decoration: none; transition: border-color .15s, box-shadow .15s; }
+.channel-entry:hover, .channel-entry:focus-visible { border-color: #2c7456; box-shadow: 0 4px 18px #214e3414; outline: 2px solid transparent; }
+.channel-top { display: flex; justify-content: space-between; align-items: center; }
+.channel-icon { font-size: 32px; }
+.channel-number { color: #708176; font-size: 12px; letter-spacing: 2px; }
+.channel-entry h3 { font-size: 23px; color: #214b38; margin: 20px 0 10px; }
+.channel-entry p { color: #67756d; line-height: 1.8; font-size: 14px; min-height: 76px; margin: 0; }
+.channel-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 18px 0 24px; }
+.channel-tags span { border-radius: 4px; padding: 4px 8px; background: #f1f6f2; color: #4d715c; font-size: 12px; }
+.channel-open { display: flex; justify-content: space-between; align-items: center; padding-top: 18px; margin-top: auto; border-top: 1px solid #edf0ee; color: #286b4d; font-size: 15px; font-weight: 600; }
+.channel-flow { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 0 0 18px; }
+.channel-flow li { display: flex; align-items: flex-start; gap: 10px; background: #edf4ef; padding: 15px; border-radius: 7px; }
+.channel-flow li > span { border-radius: 50%; background: #2c7456; color: white; min-width: 24px; height: 24px; text-align: center; line-height: 24px; }
+.channel-flow b { font-size: 14px; color: #2b523e; }
+.channel-flow p { color: #617367; font-size: 12px; line-height: 1.7; margin: 5px 0 0; }
+.workbench-heading { display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; }
+.workbench-heading h3 { margin: 0; font-size: 19px; }
+.workbench-heading p { color: #68786f; font-size: 13px; margin: 8px 0 16px; }
+.channel-upload :deep(.el-upload-dragger) { padding: 22px 15px; }
+.upload-label { font-size: 15px; color: #286b4d; font-weight: 600; }
+.upload-note { font-size: 12px; color: #718077; margin-top: 8px; }
+.preview-caption { display: flex; flex-wrap: wrap; gap: 14px; margin: 18px 0 10px; font-size: 13px; }
+.preview-caption span { color: #708176; }
+.channel-empty { padding: 18px 10px; font-size: 13px; }
+.channel-history { scroll-margin-top: 16px; }
+@media (max-width: 900px) {
+  .import-channels, .channel-flow { grid-template-columns: 1fr; }
+  .channel-entry p { min-height: 0; }
+  .channel-entry { padding: 20px; }
+}
 .batch-actions {
   display: flex;
   align-items: center;

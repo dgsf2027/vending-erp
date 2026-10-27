@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
 
-const output = path.resolve(__dirname, '../../.impeccable/review');
+const output = path.resolve(__dirname, '../../vending-erp/frontend/.vite/import-history-qa');
 const baseURL = process.env.IMPORT_ACTIONS_BASE_URL || 'http://127.0.0.1:5176';
 const batches = [
   { id: 201, fileType: '出货明细', rowFail: 2, batchStatus: '已导入' },
@@ -51,6 +51,7 @@ async function setup(browser, viewport) {
     return ok({ records: [], total: 0, size: 10, current: 1 });
   });
   await page.goto(`${baseURL}/import`);
+  await page.getByRole('button', { name: '查看全部导入记录', exact: true }).click();
   await more(page, 201).waitFor();
   return { context, page };
 }
@@ -94,7 +95,7 @@ async function menuGeometry(page, id) {
 
 (async () => {
   fs.mkdirSync(output, { recursive: true });
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL });
   try {
     const desktop = await setup(browser, { width: 1440, height: 1000 });
     const { page } = desktop;
