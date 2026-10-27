@@ -14,7 +14,7 @@ import javax.validation.Valid;
 import java.io.*;
 
 @RestController
-@RequestMapping("/api/v1/basedata/products/smart-import")
+@RequestMapping("/v1/basedata/products/smart-import")
 @RequiredArgsConstructor
 public class SmartProductImportController {
     private final SmartProductImportService service;
@@ -33,6 +33,10 @@ public class SmartProductImportController {
     @PostMapping("/commit")
     public R<ProductImportDtos.CommitResp> commit(@Valid @RequestBody ProductImportDtos.CommitReq request,
             @RequestHeader(value = Operators.HEADER, required = false) String operator) {
+        if (request.isManualEntry()) {
+            if (cn.hutool.core.util.StrUtil.isNotBlank(request.getToken())) throw new BizException("手工录入不能同时使用上传凭据");
+            return R.ok(service.commitManual(request.getRows(), Operators.resolve(operator)));
+        }
         return R.ok(service.commit(request.getToken(), request.getRows(), Operators.resolve(operator)));
     }
 

@@ -111,6 +111,32 @@ public class SmartProductImportService {
         if (error != null) markError(row, error);
     }
 
+    /** 手工录入也保留提交时的原表快照，沿用同一匹配、编号与逐行事务管线。 */
+    public ProductImportDtos.CommitResp commitManual(List<Row> rows, String operator) {
+        validateRows(rows);
+        try (org.apache.poi.xssf.usermodel.XSSFWorkbook workbook = new org.apache.poi.xssf.usermodel.XSSFWorkbook();
+             java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
+            org.apache.poi.ss.usermodel.Sheet sheet = workbook.createSheet("手工商品录入");
+            String[] headers = {"行号", "后台商品编号", "商品名称", "商品条形码", "基本单位", "箱规",
+                    "参考成本", "参考售价", "商品分类", "ERP编码", "状态", "备注"};
+            org.apache.poi.ss.usermodel.Row head = sheet.createRow(0);
+            for (int c = 0; c < headers.length; c++) head.createCell(c).setCellValue(headers[c]);
+            for (int i = 0; i < rows.size(); i++) {
+                Row row = rows.get(i);
+                String[] cells = {String.valueOf(row.getRowNo()), row.getSourceCode(), row.getProductName(), row.getBarcode(),
+                    row.getUnit(), row.getBoxSpec(), row.getRefCost(), row.getRefPrice(), row.getCategory(),
+                    row.getSkuCode(), row.getProductStatus(), row.getRemark()};
+                org.apache.poi.ss.usermodel.Row target = sheet.createRow(i + 1);
+                for (int c = 0; c < cells.length; c++) target.createCell(c).setCellValue(StrUtil.nullToEmpty(cells[c]));
+            }
+            workbook.write(out);
+            String token = parse("手工商品录入-" + LocalDate.now() + ".xlsx", out.toByteArray()).getToken();
+            return commit(token, rows, operator);
+        } catch (IOException e) {
+            throw new BizException("手工录入资料归档失败，请稍后重试");
+        }
+    }
+
     public ProductImportDtos.CommitResp commit(String token, List<Row> rows, String operator) {
         validateRows(rows);
         Upload upload = uploads.get(token == null ? "" : token);
