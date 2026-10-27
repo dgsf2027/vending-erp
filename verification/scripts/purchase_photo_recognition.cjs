@@ -166,11 +166,11 @@ async function setup(browser, viewport = { width: 1440, height: 1000 }) {
     assert.equal(await rows.count(), 2, 'Both active and crossed-out source rows stay visible');
     const first = rows.nth(0);
     await until(async () => (await first.innerText()).includes(product.productName), 'Recognized SKU must populate the product selector');
-    assert.equal(await first.locator('.photo-source input').inputValue(), '测试绿茶');
-    assert.equal(Number(await first.locator('td').nth(2).getByRole('spinbutton').inputValue()), 5);
-    assert.equal(Number(await first.locator('td').nth(3).getByRole('spinbutton').inputValue()), 36);
+    assert.match(await first.locator('.photo-source').innerText(), /票面：测试绿茶/);
+    assert.equal(Number(await first.locator('td').nth(3).getByRole('spinbutton').inputValue()), 5);
+    assert.equal(Number(await first.locator('td').nth(4).getByRole('spinbutton').inputValue()), 36);
     assert.match(await first.locator('.photo-unit').innerText(), /整箱/);
-    assert.match(await first.innerText(), /票面单位：箱\s*·\s*规格：1L/);
+    assert.match(await first.innerText(), /票面单位：箱/);
     assert.match(await first.innerText(), /60\s*瓶/);
     assert.match(await first.innerText(), /3\.0000/);
     assert.equal(await rows.nth(1).getByRole('checkbox').isChecked(), false, 'Crossed-out row must be excluded by default');
@@ -227,10 +227,68 @@ async function setup(browser, viewport = { width: 1440, height: 1000 }) {
     await until(async () => (await dialog(page).locator('.el-table__body tbody tr').first().innerText()).includes(otherProduct.productName), 'Selected replacement SKU must be displayed');
     assert.equal(await dialog(page).getByRole('button', { name: '生成入库草稿', exact: true }).isDisabled(), true, 'Changing SKU must clear the old quantity interpretation');
     await dialog(page).locator('.photo-unit .el-select').click();
-    await page.locator('.el-select-dropdown:visible').getByRole('option', { name: '基本单位', exact: true }).click();
+    await page.locator('.el-select-dropdown:visible').getByRole('option', { name: '基本单位（袋）', exact: true }).click();
     assert.equal(await dialog(page).getByRole('button', { name: '生成入库草稿', exact: true }).isEnabled(), true);
     await closePhoto(page);
     passed.push('changing product clears the old unit and requires explicit reconfirmation');
+
+    // One unit choice covers all included rows; every SKU keeps its own pack size.
+    const batch = preview({ documentNo: 'TEST-BATCH-REVIEW', declaredTotal: 324 });
+    const candidate = p => ({ productId: p.id, productName: p.productName, skuCode: p.skuCode, boxSpec: p.boxSpec, unit: p.unit, score: 0.94 });
+    batch.rows = [
+      { ...batch.rows[0], sourceUnit: null, unitMode: null, matchKind: 'suggested', candidates: [candidate(product)] },
+      { ...batch.rows[0], rowNo: 2, sourceName: '测试咖啡简称', sourceSpec: null, sourceUnit: null, unitMode: null,
+        productId: null, productName: null, skuCode: null, boxSpec: null, unit: null, matchKind: 'none',
+        qty: 3, unitPrice: 48, sourceAmount: 144, candidates: [candidate(otherProduct)],
+        warnings: ['商品未能唯一匹配，请手动选择档案', '票面单位未能确定，请核对数量和单价按箱还是基本单位填写'] },
+      { ...batch.rows[1], rowNo: 3 },
+    ];
+    state.photoHandler = route => ok(route, batch);
+    await openPhoto(page);
+    await pick(page, 'batch-review.png');
+    await waitForDocument(page, batch.documentNo);
+    assert.match(await dialog(page).locator('.photo-summary').innerText(), /含 1 行推荐/);
+    assert.match(await dialog(page).locator('.el-table__body tbody tr').first().innerText(), /推荐 · 请核对/);
+    await dialog(page).locator('.photo-batch').getByText('全部按箱', { exact: true }).click();
+    await dialog(page).locator('.photo-candidates').getByRole('button', { name: /测试袋装咖啡/ }).click();
+    const batchRows = dialog(page).locator('.el-table__body tbody tr');
+    assert.match(await batchRows.nth(0).innerText(), /60\s*瓶/);
+    assert.match(await batchRows.nth(1).innerText(), /72\s*袋/);
+    assert.match(await batchRows.nth(1).innerText(), /2\.0000/);
+    assert.doesNotMatch(await batchRows.nth(1).innerText(), /商品未能唯一匹配|票面单位未能确定|请在上方统一选择/);
+    assert.equal(await batchRows.nth(2).locator('.photo-unit').count(), 0, 'Excluded rows stay excluded during a batch operation');
+    assert.equal(await dialog(page).getByRole('button', { name: '生成入库草稿', exact: true }).isDisabled(), true, 'Suggested products require one whole-document acknowledgement');
+    await dialog(page).locator('.photo-summary .el-checkbox').click();
+    assert.equal(await dialog(page).locator('.el-table__body tbody tr').count(), 1, 'Only suggested row still needs review');
+    await dialog(page).locator('.photo-summary .el-checkbox').click();
+    await dialog(page).locator('.photo-batch').getByText('全部按基本单位', { exact: true }).click();
+    assert.match(await batchRows.nth(0).innerText(), /入库 5\s*瓶/);
+    assert.match(await batchRows.nth(1).innerText(), /入库 3\s*袋/);
+    await dialog(page).locator('.photo-batch').getByText('按识别结果', { exact: true }).click();
+    assert.match(await batchRows.nth(0).innerText(), /请在上方统一选择数量单位/);
+    await dialog(page).locator('.photo-batch').getByText('全部按箱', { exact: true }).click();
+    await batchRows.nth(1).getByRole('spinbutton', { name: '每箱数量', exact: true }).fill('');
+    await batchRows.nth(1).getByRole('spinbutton', { name: '每箱数量', exact: true }).blur();
+    assert.match(await batchRows.nth(1).innerText(), /请填写每箱数量/);
+    await dialog(page).locator('.photo-acknowledged').click();
+    assert.equal(await dialog(page).getByRole('button', { name: '生成入库草稿', exact: true }).isDisabled(), true, 'Batch choice must not invent missing pack sizes');
+    await batchRows.nth(1).getByRole('spinbutton', { name: '每箱数量', exact: true }).fill('24');
+    await batchRows.nth(1).getByRole('spinbutton', { name: '每箱数量', exact: true }).blur();
+    assert.equal(await dialog(page).locator('.photo-acknowledged').getByRole('checkbox').isChecked(), false, 'Edits invalidate the previous acknowledgement');
+    await dialog(page).locator('.photo-acknowledged').click();
+    assert.equal(await dialog(page).getByRole('button', { name: '生成入库草稿', exact: true }).isEnabled(), true);
+    await page.screenshot({ path: path.join(output, 'photo-batch-review-desktop.png'), fullPage: true, animations: 'disabled' });
+    await dialog(page).getByRole('button', { name: '生成入库草稿', exact: true }).click();
+    await until(() => draftRequests.length === 2, 'Explicit batch draft submission must complete');
+    assert.deepEqual(draftRequests[1].items, [
+      { productId: 7, qty: 60, expectQty: null, unitPrice: 3, poItemId: null },
+      { productId: 8, qty: 72, expectQty: null, unitPrice: 2, poItemId: null },
+    ]);
+    await receive.getByText('TEST-DRAFT-901', { exact: false }).waitFor();
+    await receive.getByRole('button', { name: '关闭', exact: true }).click();
+    await receive.waitFor({ state: 'hidden' });
+    passed.push('suggested SKU is prefilled, candidates resolve with one click, batch units use individual pack sizes and a single acknowledgement creates a correct draft');
+    passed.push('pending filter, reverting unit mode, missing pack size block and acknowledgement reset work');
 
     // A gateway failure is not a successful empty recognition. Retry reuses the same image.
     const beforeRetry = photoRequests.length;
@@ -291,7 +349,7 @@ async function setup(browser, viewport = { width: 1440, height: 1000 }) {
     assert.equal(await dialog(page).locator('.el-table__body tbody tr').count(), 1);
     assert.equal(await dialog(page).locator('.photo-source input').inputValue(), '');
     assert.equal(await dialog(page).getByRole('button', { name: '生成入库草稿', exact: true }).isDisabled(), true);
-    assert.equal(draftRequests.length, 1);
+    assert.equal(draftRequests.length, 2);
     assert.deepEqual(unexpectedWrites, []);
     await closePhoto(page);
     passed.push('empty response is an error; manual mode requires an explicit action and does not submit');

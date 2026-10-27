@@ -27,6 +27,7 @@ import java.text.Normalizer;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -75,6 +76,16 @@ public class PurchasePhotoPreviewService {
     }
 
     @Data
+    public static class Candidate {
+        private Long productId;
+        private String productName;
+        private String skuCode;
+        private BigDecimal boxSpec;
+        private String unit;
+        private double score;
+    }
+
+    @Data
     public static class Line {
         private int rowNo;
         private String sourceName;
@@ -85,6 +96,9 @@ public class PurchasePhotoPreviewService {
         private Long productId;
         private String productName;
         private String skuCode;
+        /** exact 为唯一精确匹配，suggested 为预选推荐，需整单核对。 */
+        private String matchKind = "none";
+        private List<Candidate> candidates = new ArrayList<>();
         private BigDecimal boxSpec;
         private String unit;
         private BigDecimal qty;
@@ -184,6 +198,16 @@ public class PurchasePhotoPreviewService {
             line.setUncertain(Boolean.TRUE.equals(raw.getBool("uncertain")));
             if (line.getSourceName() != null) {
                 Product product = byName.match(line.getSourceName(), line.getSourceSpec());
+                if (product != null) line.setMatchKind("exact");
+                else {
+                    List<Candidate> candidates = byName.suggest(line.getSourceName(), line.getSourceSpec());
+                    line.setCandidates(candidates);
+                    if (!candidates.isEmpty() && candidates.get(0).getScore() >= 0.86
+                            && (candidates.size() == 1 || candidates.get(0).getScore() - candidates.get(1).getScore() >= 0.08)) {
+                        product = byName.products.get(candidates.get(0).getProductId());
+                        line.setMatchKind("suggested");
+                    }
+                }
                 if (product != null) {
                     line.setProductId(product.getId());
                     line.setProductName(product.getProductName());
@@ -196,7 +220,8 @@ public class PurchasePhotoPreviewService {
             if (line.isCrossedOut()) {
                 line.getWarnings().add("票面已划掉，默认不带入入库单");
             } else {
-                if (line.getProductId() == null) line.getWarnings().add("商品未能唯一匹配，请手动选择档案");
+                if (line.getProductId() == null) line.getWarnings().add("商品有歧义或未找到，请选择候选商品或搜索档案");
+                if ("suggested".equals(line.getMatchKind())) line.getWarnings().add("已按相近名称推荐商品，请核对后整单确认");
                 if (line.getUnitMode() == null) line.getWarnings().add("票面单位未能确定，请核对数量和单价按箱还是基本单位填写");
                 if ("box".equals(line.getUnitMode()) && (line.getBoxSpec() == null || line.getBoxSpec().signum() <= 0)) {
                     line.getWarnings().add("商品档案缺少有效箱规，请核对每箱数量");
@@ -238,17 +263,19 @@ public class PurchasePhotoPreviewService {
         return names;
     }
 
-    /** 只做规范化后的精确名称/别名匹配，不根据相似度跨容量猜商品。 */
+    /** 先精确匹配，再给出名称候选；明确的数字规格冲突不能进入候选。 */
     private static class ProductNames {
         private final Map<String, Product> unique = new HashMap<>();
         private final Set<String> ambiguous = new HashSet<>();
         private final Map<Long, Set<String>> namesByProduct = new HashMap<>();
+        private final Map<Long, Product> products = new HashMap<>();
 
         void add(String name, Product product) {
             if (name == null || product == null) return;
             String key = normalize(name);
             if (key.isEmpty()) return;
             namesByProduct.computeIfAbsent(product.getId(), id -> new HashSet<>()).add(key);
+            products.put(product.getId(), product);
             Product previous = unique.putIfAbsent(key, product);
             if (previous != null && !previous.getId().equals(product.getId())) ambiguous.add(key);
         }
@@ -276,6 +303,85 @@ public class PurchasePhotoPreviewService {
                 }
             }
             return null;
+        }
+
+        List<Candidate> suggest(String sourceName, String sourceSpec) {
+            String name = normalize(sourceName);
+            String spec = sourceSpec == null ? "" : normalize(sourceSpec);
+            Set<String> required = numbers(name + " " + spec);
+            String query = words(name);
+            String specWords = words(spec);
+            if (specWords.length() >= 2 && !query.contains(specWords)) query += specWords;
+            if (query.length() < 2) return java.util.Collections.emptyList();
+            List<Candidate> candidates = new ArrayList<>();
+            for (Map.Entry<Long, Set<String>> entry : namesByProduct.entrySet()) {
+                // 规格证据必须来自同一条档案名称/别名，不能将两个冲突规格拼起来满足。
+                if (!required.isEmpty() && entry.getValue().stream().noneMatch(n -> compatibleNumbers(required, numbers(n)))) continue;
+                double score = 0;
+                for (String known : entry.getValue()) {
+                    score = Math.max(score, similarity(query, words(known), !required.isEmpty()));
+                }
+                if (score < 0.65) continue;
+                Product product = products.get(entry.getKey());
+                Candidate candidate = new Candidate();
+                candidate.setProductId(product.getId());
+                candidate.setProductName(product.getProductName());
+                candidate.setSkuCode(product.getSkuCode());
+                candidate.setBoxSpec(product.getBoxSpec());
+                candidate.setUnit(product.getUnit());
+                candidate.setScore(score);
+                candidates.add(candidate);
+            }
+            candidates.sort(Comparator.comparingDouble(Candidate::getScore).reversed()
+                    .thenComparing(Candidate::getProductId));
+            return new ArrayList<>(candidates.subList(0, Math.min(3, candidates.size())));
+        }
+
+        private static Set<String> numbers(String value) {
+            Set<String> numbers = new HashSet<>();
+            Matcher matcher = Pattern.compile("\\d+(?:[.\\-/]\\d+)*(?:ml|kg|g|克|千克)?").matcher(value);
+            while (matcher.find()) numbers.add(matcher.group());
+            return numbers;
+        }
+
+        private static boolean compatibleNumbers(Set<String> required, Set<String> known) {
+            for (String token : required) {
+                if (known.contains(token)) continue;
+                // 手写的“500”可作为“500ml”的候选证据；明确写出的单位不能跨单位替换。
+                if (!token.matches("\\d+(?:\\.\\d+)?") || known.stream().noneMatch(n ->
+                        n.matches(Pattern.quote(token) + "(?:ml|kg|g|克|千克)"))) return false;
+            }
+            return true;
+        }
+
+        private static String words(String value) {
+            return value.replaceAll("\\d+(?:[.\\-/]\\d+)*(?:ml|kg|g|克|千克)?", "")
+                    .replaceAll("[^\\p{IsHan}a-z]", "");
+        }
+
+        private static double similarity(String query, String known, boolean hasSize) {
+            if (query.equals(known)) return 1;
+            // 常见手写简称：元气维C柠檬 → 元气森林维C柠檬味；短泛称不自动扩展。
+            if (query.length() >= (hasSize ? 3 : 4) && known.length() >= query.length()
+                    && (double) query.length() / known.length() >= 0.55) {
+                int matched = 0;
+                for (int i = 0; i < known.length() && matched < query.length(); i++) {
+                    if (known.charAt(i) == query.charAt(matched)) matched++;
+                }
+                if (matched == query.length()) return 0.94;
+            }
+            if (query.length() < 4 || known.length() < 4) return 0;
+            int[] previous = new int[known.length() + 1];
+            for (int j = 0; j <= known.length(); j++) previous[j] = j;
+            for (int i = 1; i <= query.length(); i++) {
+                int[] current = new int[known.length() + 1];
+                current[0] = i;
+                for (int j = 1; j <= known.length(); j++) current[j] = Math.min(Math.min(
+                        current[j - 1] + 1, previous[j] + 1), previous[j - 1]
+                        + (query.charAt(i - 1) == known.charAt(j - 1) ? 0 : 1));
+                previous = current;
+            }
+            return Math.min(0.90, 1.0 - (double) previous[known.length()] / Math.max(query.length(), known.length()));
         }
     }
 

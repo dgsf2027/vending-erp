@@ -196,6 +196,86 @@ class PurchasePhotoPreviewServiceTest {
         assertTrue(line.getWarnings().stream().anyMatch(w -> w.contains("箱规")));
     }
 
+    @Test
+    void abbreviatedHandwrittenNamePreselectsDistinctCatalogProductForReview() {
+        catalog(product(7L, "元气森林维C柠檬味550ml", "瓶", "15"),
+                product(8L, "康师傅绿茶1L", "瓶", "12"));
+        PurchasePhotoPreviewService.Line line = parse("{\"name\":\"元气维C柠檬\",\"qty\":3,\"unitPrice\":50}").getRows().get(0);
+        assertEquals(7L, line.getProductId());
+        assertEquals("suggested", line.getMatchKind());
+        assertEquals("元气维C柠檬", line.getSourceName());
+        assertEquals(new BigDecimal("15"), line.getBoxSpec());
+        assertNull(line.getUnitMode(), "Name matching must never guess the quantity unit");
+        assertEquals(7L, line.getCandidates().get(0).getProductId());
+    }
+
+    @Test
+    void twoCapacitiesRequireCandidateChoiceUnlessSourceSuppliesCapacity() {
+        catalog(product(7L, "元气森林维C柠檬味500ml", "瓶", "24"),
+                product(8L, "元气森林维C柠檬味1L", "瓶", "12"));
+        PurchasePhotoPreviewService.Preview result = parse(
+                "{\"name\":\"元气维C柠檬\",\"qty\":3,\"unitPrice\":50},"
+                + "{\"name\":\"元气维C柠檬\",\"sourceSpec\":\"1000ml\",\"qty\":3,\"unitPrice\":50}");
+        assertNull(result.getRows().get(0).getProductId());
+        assertEquals(2, result.getRows().get(0).getCandidates().size());
+        assertEquals(8L, result.getRows().get(1).getProductId());
+        assertEquals("suggested", result.getRows().get(1).getMatchKind());
+    }
+
+    @Test
+    void conflictingNumericSpecificationsCannotReenterThroughFuzzyCandidates() {
+        catalog(product(7L, "元气森林维C柠檬味500ml", "瓶", "24"));
+        PurchasePhotoPreviewService.Line line = parse("{\"name\":\"元气维C柠檬\",\"sourceSpec\":\"1L\",\"qty\":3,\"unitPrice\":50}").getRows().get(0);
+        assertNull(line.getProductId());
+        assertTrue(line.getCandidates().isEmpty());
+    }
+
+    @Test
+    void exactMatchesTakePriorityAndCandidateListsDeduplicateAliasesAndExcludeStoppedProducts() {
+        Product stopped = product(9L, "元气维C柠檬", "瓶", "12");
+        stopped.setProductStatus("停售");
+        when(products.selectList(any())).thenReturn(Arrays.asList(
+                product(7L, "元气森林维C柠檬味550ml", "瓶", "15"), stopped));
+        when(aliases.selectList(any())).thenReturn(Arrays.asList(
+                alias("元气维C柠檬味", 7L), alias("元气柠檬", 7L)));
+        PurchasePhotoPreviewService.Preview result = parse(
+                "{\"name\":\"元气维C柠檬\",\"qty\":3,\"unitPrice\":50},"
+                + "{\"name\":\"元气柠檬\",\"qty\":3,\"unitPrice\":50}");
+        assertEquals(1, result.getRows().get(0).getCandidates().size());
+        assertEquals(7L, result.getRows().get(0).getProductId());
+        assertEquals("exact", result.getRows().get(1).getMatchKind());
+        assertTrue(result.getRows().get(1).getCandidates().isEmpty());
+    }
+
+    @Test
+    void bareHandwrittenCapacityCanSuggestOnlyTheMatchingNumericSize() {
+        catalog(product(7L, "康师傅绿茶500ml", "瓶", "24"), product(8L, "康师傅绿茶1L", "瓶", "12"));
+        PurchasePhotoPreviewService.Line line = parse("{\"name\":\"康绿茶500\",\"qty\":3,\"unitPrice\":50}").getRows().get(0);
+        assertEquals(1, line.getCandidates().size());
+        assertEquals(7L, line.getCandidates().get(0).getProductId());
+    }
+
+    @Test
+    void separatelyPrintedFlavourIsUsedWhenRankingSuggestions() {
+        catalog(product(7L, "元气森林维C柠檬味550ml", "瓶", "15"),
+                product(8L, "元气森林维C西柚味550ml", "瓶", "15"));
+        PurchasePhotoPreviewService.Line line = parse("{\"name\":\"元气维C\",\"sourceSpec\":\"柠檬味550ml\",\"qty\":3,\"unitPrice\":50}").getRows().get(0);
+        assertEquals(7L, line.getProductId());
+        assertEquals("suggested", line.getMatchKind());
+    }
+
+    @Test
+    void shortGenericNamesAndCompetingFlavoursAreNotArbitrarilyPreselected() {
+        catalog(product(7L, "元气森林维C柠檬味550ml", "瓶", "15"),
+                product(8L, "元气森林维C青柠檬味550ml", "瓶", "15"));
+        PurchasePhotoPreviewService.Preview result = parse(
+                "{\"name\":\"元气\",\"qty\":3,\"unitPrice\":50},"
+                + "{\"name\":\"元气维C柠檬\",\"qty\":3,\"unitPrice\":50}");
+        assertTrue(result.getRows().stream().allMatch(line -> line.getProductId() == null));
+        assertTrue(result.getRows().get(0).getCandidates().isEmpty());
+        assertEquals(2, result.getRows().get(1).getCandidates().size());
+    }
+
     private PurchasePhotoPreviewService.Preview parse(String rows) {
         return service(new LlmProperties()).parseReply("{\"items\":[" + rows + "]}");
     }

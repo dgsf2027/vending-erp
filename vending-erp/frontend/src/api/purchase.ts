@@ -255,6 +255,14 @@ export function previewPurchaseImport(kind: PurchaseImportKind, file: File): Pro
   return request.post(`/v1/purchase/import/${kind}/preview`, data)
 }
 
+export interface PurchasePhotoCandidate {
+  productId: number
+  productName: string
+  skuCode: string
+  boxSpec: number | null
+  unit: string | null
+  score: number
+}
 export interface PurchasePhotoLine {
   rowNo: number
   sourceName: string | null
@@ -264,6 +272,8 @@ export interface PurchasePhotoLine {
   productId: number | null
   productName: string | null
   skuCode: string | null
+  matchKind?: 'exact' | 'suggested' | 'none' | 'manual'
+  candidates?: PurchasePhotoCandidate[]
   boxSpec: number | null
   unit: string | null
   qty: number | null
