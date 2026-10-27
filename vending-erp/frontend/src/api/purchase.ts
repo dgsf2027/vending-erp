@@ -258,6 +258,9 @@ export function previewPurchaseImport(kind: PurchaseImportKind, file: File): Pro
 export interface PurchasePhotoLine {
   rowNo: number
   sourceName: string | null
+  sourceUnit: string | null
+  sourceSpec: string | null
+  unitMode: 'base' | 'box' | null
   productId: number | null
   productName: string | null
   skuCode: string | null
@@ -291,10 +294,15 @@ export interface PurchasePhotoDraft {
     boxSpec: number | null; boxCount: number | null; boxPrice: number | null; totalPrice: number
   }>
 }
-export function previewPurchasePhoto(file: File): Promise<PurchasePhotoPreview> {
+export function previewPurchasePhoto(file: File, signal?: AbortSignal): Promise<PurchasePhotoPreview> {
   const data = new FormData()
   data.append('file', file)
-  return request.post('/v1/purchase/import/receipt/photo-preview', data)
+  // 视觉识别允许后端等待 120 秒；此请求留出上传、处理与响应的余量。
+  return request.post('/v1/purchase/import/receipt/photo-preview', data, {
+    timeout: 150000,
+    signal,
+    silentError: true,
+  })
 }
 export function purchaseImportTemplate(kind: PurchaseImportKind): Promise<Blob> {
   return request.get(`/v1/purchase/import/${kind}/template`, { responseType: 'blob' })

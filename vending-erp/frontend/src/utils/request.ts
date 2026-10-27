@@ -2,6 +2,13 @@ import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import { clearSession } from '@/utils/session'
 
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    /** 由页面展示可重试的错误说明，避免重复弹出通用错误。401 仍执行登录处理。 */
+    silentError?: boolean
+  }
+}
+
 /**
  * 统一 axios 实例:
  * - baseURL = /api(dev 由 vite proxy 转发到 8081,后端 context-path 也是 /api)
@@ -58,17 +65,21 @@ request.interceptors.response.use(
       return res.data
     }
     const message = res?.message || '请求失败'
-    ElMessage.error(message)
+    if (!response.config.silentError) ElMessage.error(message)
     return Promise.reject(new Error(message))
   },
   (error) => {
+    // 关闭弹窗/切换照片取消请求属于正常操作。
+    if (axios.isCancel(error)) return Promise.reject(error)
     // 2026-08-19 邀请码注册上线:401 → 回登录页
     if (error?.response?.status === 401) {
       clearSession()
       if (!location.pathname.startsWith('/login') && !location.pathname.startsWith('/sso/')) location.href = `/login?redirect=${encodeURIComponent(location.pathname)}`
       return Promise.reject(error)
     }
-    ElMessage.error(error?.response?.data?.message || error?.message || '网络异常')
+    if (!error?.config?.silentError) {
+      ElMessage.error(error?.response?.data?.message || error?.message || '网络异常')
+    }
     return Promise.reject(error)
   },
 )

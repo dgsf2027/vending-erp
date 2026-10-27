@@ -23,6 +23,7 @@ import top.aole.vend.modules.basedata.infrastructure.mapper.SupplierMapper;
 import java.io.IOException;
 import java.io.ByteArrayInputStream;
 import java.math.BigDecimal;
+import java.text.Normalizer;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -31,6 +32,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** 拿货单照片只生成可修改的预览；建草稿和过账仍由原采购流程处理。 */
 @Service
@@ -38,13 +41,18 @@ import java.util.Set;
 public class PurchasePhotoPreviewService {
     private static final long MAX_BYTES = 10L * 1024 * 1024;
     private static final BigDecimal CENT = new BigDecimal("0.01");
-    static final String PROMPT = "识别这张手写拿货单，只输出 JSON 对象，不要解释或代码围栏。"
+    private static final Pattern VOLUME = Pattern.compile("(\\d+(?:\\.\\d+)?)(毫升|ml|升|l)(?![a-z])");
+    static final String PROMPT = "识别这张印刷或手写的送货单/拿货单，只输出 JSON 对象，不要解释或代码围栏。"
             + "格式:{\"documentNo\":null,\"bizDate\":null,\"supplierName\":null,\"total\":null,"
-            + "\"items\":[{\"name\":null,\"qty\":null,\"unitPrice\":null,\"amount\":null,"
+            + "\"items\":[{\"name\":null,\"sourceUnit\":null,\"sourceSpec\":null,\"qty\":null,\"unitPrice\":null,\"amount\":null,"
             + "\"crossedOut\":false,\"uncertain\":false}]}。"
             + "日期用 yyyy-MM-dd，金额和数量只写数字；看不清填 null 并把 uncertain 设为 true。"
             + "按图片从上到下逐行保留商品，划掉/作废的行也保留并标 crossedOut=true。"
-            + "不要把左侧打勾当作数量，不要把‘收货单位’当作供应商，不能臆造箱规或商品编码。"
+            + "sourceUnit 只抄录票面明确标注的数量单位（如箱、件、瓶、袋），没有或看不清填 null。"
+            + "sourceSpec 只抄录票面规格或商品名中明确写出的容量/规格（如 1L、500毫升），没有或看不清填 null。"
+            + "名称、规格、单位分列时分别抄录，name 保留原始商品名，不能省略已有的口味、容量。"
+            + "数量和单价保持票面单位口径，不要自动把箱换成瓶，不得根据价格高低或常识猜测单位或箱规。"
+            + "不要把左侧打勾当作数量或单位，不要把‘收货单位’当作供应商，不能臆造箱规或商品编码。"
             + "只抄写票面值，不自行补全或修改单价、金额与合计。";
 
     private final LlmProperties llmProperties;
@@ -70,6 +78,10 @@ public class PurchasePhotoPreviewService {
     public static class Line {
         private int rowNo;
         private String sourceName;
+        private String sourceUnit;
+        private String sourceSpec;
+        /** 数量/单价的票面口径；仅由明确单位推断，证据不足时留空。 */
+        private String unitMode;
         private Long productId;
         private String productName;
         private String skuCode;
@@ -151,7 +163,7 @@ public class PurchasePhotoPreviewService {
             result.getWarnings().add("请手动选择供应商；单据上的收货单位不等于送货供应商");
         }
 
-        Map<String, Product> byName = uniqueProducts();
+        ProductNames byName = uniqueProducts();
         int index = 0;
         for (Object item : items) {
             index++;
@@ -163,13 +175,15 @@ public class PurchasePhotoPreviewService {
             Line line = new Line();
             line.setRowNo(index);
             line.setSourceName(trim(raw.getStr("name")));
+            line.setSourceUnit(trim(raw.getStr("sourceUnit")));
+            line.setSourceSpec(trim(raw.getStr("sourceSpec")));
             line.setQty(decimal(raw.get("qty")));
             line.setUnitPrice(decimal(raw.get("unitPrice")));
             line.setSourceAmount(decimal(raw.get("amount")));
             line.setCrossedOut(Boolean.TRUE.equals(raw.getBool("crossedOut")));
             line.setUncertain(Boolean.TRUE.equals(raw.getBool("uncertain")));
             if (line.getSourceName() != null) {
-                Product product = byName.get(normalize(line.getSourceName()));
+                Product product = byName.match(line.getSourceName(), line.getSourceSpec());
                 if (product != null) {
                     line.setProductId(product.getId());
                     line.setProductName(product.getProductName());
@@ -178,11 +192,16 @@ public class PurchasePhotoPreviewService {
                     line.setUnit(product.getUnit());
                 }
             }
+            line.setUnitMode(unitMode(line.getSourceUnit(), line.getUnit()));
             if (line.isCrossedOut()) {
                 line.getWarnings().add("票面已划掉，默认不带入入库单");
             } else {
                 if (line.getProductId() == null) line.getWarnings().add("商品未能唯一匹配，请手动选择档案");
-                if (line.isUncertain()) line.getWarnings().add("手写内容不清楚，请对照照片核对");
+                if (line.getUnitMode() == null) line.getWarnings().add("票面单位未能确定，请核对数量和单价按箱还是基本单位填写");
+                if ("box".equals(line.getUnitMode()) && (line.getBoxSpec() == null || line.getBoxSpec().signum() <= 0)) {
+                    line.getWarnings().add("商品档案缺少有效箱规，请核对每箱数量");
+                }
+                if (line.isUncertain()) line.getWarnings().add("票面内容不清楚，请对照照片核对");
                 if (line.getQty() == null || line.getQty().signum() <= 0 ||
                         line.getUnitPrice() == null || line.getUnitPrice().signum() <= 0) {
                     line.getWarnings().add("数量或单价缺失/无效，请手动核对");
@@ -204,32 +223,88 @@ public class PurchasePhotoPreviewService {
         return result;
     }
 
-    private Map<String, Product> uniqueProducts() {
-        Map<String, Product> unique = new HashMap<>();
-        Set<String> ambiguous = new HashSet<>();
+    private ProductNames uniqueProducts() {
+        ProductNames names = new ProductNames();
         Map<Long, Product> products = new HashMap<>();
         for (Product product : productMapper.selectList(null)) {
             if ("停售".equals(product.getProductStatus())) continue;
             products.put(product.getId(), product);
-            putUnique(unique, ambiguous, product.getProductName(), product);
+            names.add(product.getProductName(), product);
         }
         for (SkuAlias alias : aliasMapper.selectList(null)) {
-            putUnique(unique, ambiguous, alias.getAliasName(), products.get(alias.getProductId()));
+            names.add(alias.getAliasName(), products.get(alias.getProductId()));
         }
-        ambiguous.forEach(unique::remove);
-        return unique;
+        names.ambiguous.forEach(names.unique::remove);
+        return names;
     }
 
-    private static void putUnique(Map<String, Product> unique, Set<String> ambiguous, String name, Product product) {
-        if (name == null || product == null) return;
-        String key = normalize(name);
-        if (key.isEmpty()) return;
-        Product previous = unique.putIfAbsent(key, product);
-        if (previous != null && !previous.getId().equals(product.getId())) ambiguous.add(key);
+    /** 只做规范化后的精确名称/别名匹配，不根据相似度跨容量猜商品。 */
+    private static class ProductNames {
+        private final Map<String, Product> unique = new HashMap<>();
+        private final Set<String> ambiguous = new HashSet<>();
+        private final Map<Long, Set<String>> namesByProduct = new HashMap<>();
+
+        void add(String name, Product product) {
+            if (name == null || product == null) return;
+            String key = normalize(name);
+            if (key.isEmpty()) return;
+            namesByProduct.computeIfAbsent(product.getId(), id -> new HashSet<>()).add(key);
+            Product previous = unique.putIfAbsent(key, product);
+            if (previous != null && !previous.getId().equals(product.getId())) ambiguous.add(key);
+        }
+
+        Product match(String sourceName, String sourceSpec) {
+            String name = normalize(sourceName);
+            if (sourceSpec == null) return unique.get(name);
+            String spec = normalize(sourceSpec);
+            if (spec.isEmpty()) return null;
+            Product combined = unique.get(normalize(sourceName + sourceSpec));
+            if (combined != null) return combined;
+            Product exact = unique.get(name);
+            if (exact == null) return null;
+            // 已带规格的名称不需要重复追加；票面另列的规格必须有档案名称/别名佐证。
+            for (String knownName : namesByProduct.get(exact.getId())) {
+                int start = knownName.indexOf(spec);
+                while (start >= 0) {
+                    int end = start + spec.length();
+                    boolean leftBoundary = start == 0 || (!Character.isDigit(knownName.charAt(start - 1))
+                            && knownName.charAt(start - 1) != '.');
+                    boolean rightBoundary = end == knownName.length() || (!Character.isDigit(knownName.charAt(end))
+                            && knownName.charAt(end) != '.');
+                    if (leftBoundary && rightBoundary) return exact;
+                    start = knownName.indexOf(spec, start + 1);
+                }
+            }
+            return null;
+        }
     }
 
     private static String normalize(String name) {
-        return name.replaceAll("[\\s\\p{Punct}，。；：（）【】]+", "").toLowerCase(java.util.Locale.ROOT);
+        String normalized = Normalizer.normalize(name, Normalizer.Form.NFKC)
+                .toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", "");
+        Matcher volumes = VOLUME.matcher(normalized);
+        StringBuffer result = new StringBuffer();
+        while (volumes.find()) {
+            BigDecimal value = new BigDecimal(volumes.group(1));
+            if ("升".equals(volumes.group(2)) || "l".equals(volumes.group(2))) {
+                value = value.multiply(new BigDecimal("1000"));
+            }
+            volumes.appendReplacement(result, Matcher.quoteReplacement(value.stripTrailingZeros().toPlainString() + "ml"));
+        }
+        volumes.appendTail(result);
+        // 小数点及规格连接符不可删除，防止 1.5/15、1-5L/15L 等被合并。
+        return result.toString().replaceAll("[\\p{Punct}&&[^.\\-+/*]]|[，。；：（）【】]", "");
+    }
+
+    private static String unitMode(String sourceUnit, String productUnit) {
+        if (sourceUnit == null) return null;
+        // 单位保留问号、斜杠等不确定标记，不能把“箱?”清洗成明确的“箱”。
+        String unit = Normalizer.normalize(sourceUnit, Normalizer.Form.NFKC).replaceAll("\\s+", "");
+        if (unit.isEmpty()) return null;
+        if (productUnit != null && unit.equals(Normalizer.normalize(productUnit, Normalizer.Form.NFKC)
+                .replaceAll("\\s+", ""))) return "base";
+        if ("箱".equals(unit) || "件".equals(unit) || "整箱".equals(unit) || "整件".equals(unit)) return "box";
+        return null;
     }
 
     private static String trim(String text) {
