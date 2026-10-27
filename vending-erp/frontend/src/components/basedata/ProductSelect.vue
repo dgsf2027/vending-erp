@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import type { ElSelect } from 'element-plus'
 import { getProduct, pageProducts, type Product } from '@/api/basedata'
 
 /**
@@ -19,6 +20,8 @@ const emit = defineEmits<{
 
 const options = ref<Product[]>(props.initialProduct ? [props.initialProduct] : [])
 const loading = ref(false)
+const selectRef = ref<InstanceType<typeof ElSelect>>()
+defineExpose({ focus: () => selectRef.value?.focus() })
 
 async function search(keyword: string) {
   loading.value = true
@@ -57,6 +60,7 @@ watch(() => props.modelValue, async (id) => {
 
 <template>
   <el-select
+    ref="selectRef"
     :model-value="props.modelValue"
     filterable
     remote

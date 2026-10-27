@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { isAxiosError } from 'axios'
 import { ElMessage } from 'element-plus'
+import type { TableInstance } from 'element-plus'
 import ProductSelect from '@/components/basedata/ProductSelect.vue'
 import { getProduct } from '@/api/basedata'
 import type { Supplier } from '@/api/basedata'
@@ -32,6 +33,11 @@ const acknowledged = ref(false)
 const batchUnit = ref<UnitMode | 'recognized'>('recognized')
 const onlyPending = ref(false)
 const showOriginal = ref(true)
+const reviewTable = ref<TableInstance>()
+const productControls = new Map<number, InstanceType<typeof ProductSelect>>()
+const highlightedRow = ref<number | null>(null)
+const lastRemoved = ref<Array<{ line: ReviewLine; index: number }>>([])
+let nextRowNo = 1
 let generation = 0
 let controller: AbortController | null = null
 let elapsedTimer: ReturnType<typeof setInterval> | null = null
@@ -61,6 +67,10 @@ function clear() {
   acknowledged.value = false
   batchUnit.value = 'recognized'
   onlyPending.value = false
+  highlightedRow.value = null
+  lastRemoved.value = []
+  productControls.clear()
+  nextRowNo = 1
 }
 watch(() => props.modelValue, (open) => { if (!open) clear() })
 watch(lines, () => { acknowledged.value = false }, { deep: true })
@@ -127,6 +137,7 @@ async function recognize() {
       include: !line.crossedOut,
       unitMode: line.unitMode === 'base' || line.unitMode === 'box' ? line.unitMode : null,
     }))
+    nextRowNo = Math.max(...lines.value.map(line => line.rowNo)) + 1
     preview.value = result
     supplierId.value = result.supplierId
     bizDate.value = result.bizDate || ''
@@ -151,15 +162,43 @@ function startManualEntry() {
   addManualLine()
 }
 
-function addManualLine() {
-  lines.value.push({
-    rowNo: lines.value.length + 1, sourceName: null, productId: null,
+function setProductControl(rowNo: number, control: unknown) {
+  if (control) productControls.set(rowNo, control as InstanceType<typeof ProductSelect>)
+  else productControls.delete(rowNo)
+}
+
+async function addManualLine() {
+  const line: ReviewLine = {
+    rowNo: nextRowNo++, sourceName: null, productId: null,
     sourceUnit: null, sourceSpec: null,
     productName: null, skuCode: null, boxSpec: null, unit: null,
     qty: null, unitPrice: null, sourceAmount: null, calculatedAmount: null,
-    crossedOut: false, uncertain: true, warnings: [], include: true, manual: true,
+    crossedOut: false, uncertain: false, warnings: [], include: true, manual: true,
     unitMode: batchUnit.value === 'recognized' ? null : batchUnit.value,
-  })
+  }
+  lines.value.push(line)
+  highlightedRow.value = line.rowNo
+  // 新行始终出现在表格底部，主动滚动并聚焦，避免用户误以为按钮没生效而反复点击。
+  await nextTick()
+  if (!props.modelValue || !lines.value.includes(line)) return
+  reviewTable.value?.setScrollTop(Number.MAX_SAFE_INTEGER)
+  reviewTable.value?.setScrollLeft(0)
+  productControls.get(line.rowNo)?.focus()
+}
+
+const emptyManualLines = computed(() => lines.value.filter(line => line.manual &&
+  !line.productId && !line.sourceName?.trim() && line.qty == null && line.unitPrice == null && line.boxSpec == null))
+
+function removeLines(targets: ReviewLine[]) {
+  const rowNumbers = new Set(targets.map(line => line.rowNo))
+  lastRemoved.value = lines.value.flatMap((line, index) => rowNumbers.has(line.rowNo) ? [{ line, index }] : [])
+  lines.value = lines.value.filter(line => !rowNumbers.has(line.rowNo))
+  if (highlightedRow.value != null && rowNumbers.has(highlightedRow.value)) highlightedRow.value = null
+}
+
+function undoRemove() {
+  for (const { line, index } of lastRemoved.value) lines.value.splice(Math.min(index, lines.value.length), 0, line)
+  lastRemoved.value = []
 }
 
 const included = computed(() => lines.value.filter((line) => line.include))
@@ -245,10 +284,13 @@ function issues(line: ReviewLine): string[] {
 const unresolved = computed(() => included.value.filter(line => issues(line).length))
 const suggested = computed(() => included.value.filter(line => line.matchKind === 'suggested'))
 const pending = (line: ReviewLine) => line.include && (issues(line).length > 0 || line.matchKind === 'suggested' || line.uncertain || amountDiff(line))
-const visibleLines = computed(() => onlyPending.value ? lines.value.filter(pending) : lines.value)
+// 新增行在填写期间保持可见，避免最后一项输入到一半就被“只看待核对”筛掉。
+const visibleLines = computed(() => onlyPending.value ? lines.value.filter(line =>
+  pending(line) || line.rowNo === highlightedRow.value) : lines.value)
 const pendingCount = computed(() => lines.value.filter(pending).length)
 function rowClass({ row }: { row: ReviewLine }): string {
-  return !row.include ? 'photo-excluded-row' : issues(row).length ? 'photo-pending-row' : ''
+  return [!row.include ? 'photo-excluded-row' : issues(row).length ? 'photo-pending-row' : '',
+    row.rowNo === highlightedRow.value ? 'photo-new-row' : ''].filter(Boolean).join(' ')
 }
 const reviewNeeded = computed(() => totalDiff.value || suggested.value.length > 0 ||
   included.value.some(line => line.uncertain || amountDiff(line)))
@@ -336,14 +378,15 @@ function apply() {
             <span>计入 <b>{{ included.length }}</b> 行 · 已匹配 <b>{{ included.filter(row => row.productId).length }}</b> 行<span v-if="suggested.length">（含 {{ suggested.length }} 行推荐）</span><span class="photo-warning" v-if="unresolved.length"> · 待补齐 {{ unresolved.length }} 行</span></span>
             <el-checkbox v-model="onlyPending">只看待核对（{{ pendingCount }}）</el-checkbox>
           </div>
-          <el-table :data="visibleLines" size="small" max-height="490" row-key="rowNo" class="photo-table"
+          <el-table ref="reviewTable" :data="visibleLines" size="small" max-height="490" row-key="rowNo" class="photo-table"
             :row-class-name="rowClass">
             <el-table-column label="计入" width="46"><template #default="{ row }"><el-checkbox v-model="row.include" :aria-label="`计入第${row.rowNo}行`" @change="includeLine(row)" /></template></el-table-column>
             <el-table-column label="匹配商品 / 票面名称" min-width="240">
               <template #default="{ row }">
-                <ProductSelect v-if="row.include" :model-value="row.productId" :initial-product="row.productId && row.productName ? { id: row.productId, productName: row.productName, skuCode: row.skuCode || '' } : null" lazy placeholder="搜索商品或选择下方候选" @update:model-value="selectProduct(row, $event)" />
+                <ProductSelect v-if="row.include" :ref="control => setProductControl(row.rowNo, control)" :model-value="row.productId" :initial-product="row.productId && row.productName ? { id: row.productId, productName: row.productName, skuCode: row.skuCode || '' } : null" lazy placeholder="搜索商品或选择下方候选" @update:model-value="selectProduct(row, $event)" />
                 <div class="photo-source">
                   <span class="photo-row-no">{{ row.rowNo }}.</span>
+                  <el-tag v-if="row.rowNo === highlightedRow" size="small">新增行</el-tag>
                   <el-input v-if="manualMode || row.manual" v-model="row.sourceName" size="small" placeholder="票面商品名" />
                   <span v-else>票面：{{ row.sourceName || '未识别商品名' }}<span v-if="row.sourceSpec"> · {{ row.sourceSpec }}</span></span>
                   <el-tag v-if="row.include && row.matchKind === 'suggested'" type="warning" size="small">推荐 · 请核对</el-tag>
@@ -383,9 +426,17 @@ function apply() {
                 <div v-if="row.include && amountDiff(row)" class="photo-warning">票面金额 {{ row.sourceAmount }}，有差异</div>
               </template>
             </el-table-column>
+            <el-table-column label="操作" width="64" fixed="right">
+              <template #default="{ row }"><el-button link type="danger" :aria-label="`删除第${row.rowNo}行`" title="从本次明细中删除，可撤销" @click="removeLines([row])">删除</el-button></template>
+            </el-table-column>
             <template #empty>{{ onlyPending ? '没有待核对的行，可查看全部明细' : '暂无商品明细' }}</template>
           </el-table>
-          <el-button link type="primary" @click="addManualLine">＋ 手工添加一行</el-button>
+          <div class="photo-row-actions">
+            <el-button type="primary" plain @click="addManualLine">＋ 手工添加一行</el-button>
+            <el-button v-if="emptyManualLines.length" plain @click="removeLines(emptyManualLines)">清理空白行（{{ emptyManualLines.length }}）</el-button>
+            <span v-if="highlightedRow !== null" class="mini" role="status">已定位到第 {{ highlightedRow }} 行</span>
+          </div>
+          <div v-if="lastRemoved.length" class="photo-undo" role="status">已从本次明细删除 {{ lastRemoved.length }} 行 <el-button link type="primary" @click="undoRemove">撤销删除</el-button></div>
           <div class="photo-totals"><span>票面合计 {{ preview?.declaredTotal ?? '未识别' }} 元</span><span>本次合计 <b>¥{{ total.toFixed(2) }}</b></span></div>
           <el-alert v-if="totalDiff" type="warning" :closable="false" title="合计与票面不一致，请核对划掉的行及金额。" />
           <el-checkbox v-if="reviewNeeded" v-model="acknowledged" class="photo-acknowledged">我已核对推荐商品、模糊字迹和金额差异，按当前明细继续</el-checkbox>
@@ -432,6 +483,10 @@ function apply() {
 .photo-table :deep(.cell) { padding: 6px; }
 .photo-table :deep(.photo-excluded-row) { color: #929b96; background: #f6f7f6; }
 .photo-table :deep(.photo-pending-row) { background: #fffbf2; }
+.photo-table :deep(.photo-new-row > td:first-child) { box-shadow: inset 3px 0 #2d6b50; }
+.photo-row-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 0 4px; }
+.photo-row-actions .el-button { margin-left: 0; }
+.photo-undo { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 8px 12px; margin-top: 8px; background: #f1f7f3; border-radius: 6px; }
 .photo-candidates { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
 .photo-candidates .el-button { margin-left: 0; max-width: 100%; height: auto; padding: 5px 7px; }
 .photo-candidates :deep(.el-button > span) { white-space: normal; overflow-wrap: anywhere; text-align: left; }

@@ -58,6 +58,8 @@ cd frontend && pnpm install && pnpm dev
 
 回归验证：前端执行 `pnpm typecheck`、`pnpm build`；后端执行 `mvn -s settings.xml -Dtest=PurchasePhotoPreviewServiceTest test`，覆盖简称预选、容量冲突、候选歧义及停售排除。启动本地前端后运行 `node verification/scripts/purchase_photo_recognition.cjs`（仓库根目录），使用全模拟接口验证超过 15 秒的回填、重试、取消、批量单位/不同箱规、候选点选、整单确认及生成草稿边界；可用 `PURCHASE_PHOTO_BASE_URL`、`PLAYWRIGHT_MODULE`、`PLAYWRIGHT_CHANNEL` 指定本地地址及浏览器环境。该回归不调用真实模型、不访问生产数据。
 
+明细表下方的「手工添加一行」会自动滚动到新行并聚焦商品搜索，新增行沿用整单单位设置，在「只看待核对」下填写完成仍保持可见。每行右侧可删除本次明细，并可撤销最近一次删除；「清理空白行」只清理完全未填写的手工行，保留识别行及已填数据。删除和撤销会即时更新合计，均不写入服务器。
+
 ## 渠道账单导入
 
 设置中心 → 资金账户 →「账单导入」，可直接读取原平台导出的 `.xls` 或 `.xlsx` 账单，保留全部十二个字段，包括账单时间、收益金额、支付手续费、账号、姓名、角色、打款渠道、渠道商户号、到账时间、结算金额、结算状态和结算信息。
