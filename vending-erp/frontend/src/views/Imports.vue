@@ -56,7 +56,7 @@ const channels: Channel[] = [
     type: '商品列表',
     icon: '🏷️',
     title: '通道③ 商品列表 → 自动建档与编号',
-    desc: '已有商品自动匹配，新商品自动分配 ERP 编码。上传后集中核对单位、箱规和待确认项。',
+    desc: '下方直接填写或上传表格；已有商品自动匹配，新商品确认后自动编号。',
     target: 'sku_alias',
   },
 ]
@@ -68,14 +68,17 @@ const previewVisible = ref(false)
 const uploading = ref<string | null>(null)
 const confirming = ref(false)
 const lastResult = ref<CommitResp | null>(null)
-const smartVisible = ref(false)
-const smartFile = ref<File | null>(null)
+const productWorkspace = ref<InstanceType<typeof SmartProductImportDialog>>()
+const productWorkspaceAnchor = ref<HTMLElement>()
+function showProductWorkspace() {
+  productWorkspaceAnchor.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
 
 function makeUploader(type: ImportFileType) {
   return async (options: UploadRequestOptions) => {
     if (type === '商品列表') {
-      smartFile.value = options.file as File
-      smartVisible.value = true
+      showProductWorkspace()
+      await productWorkspace.value?.importFile(options.file as File)
       return
     }
     uploading.value = type
@@ -477,13 +480,14 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
     </el-alert>
 
     <!-- 三通道卡片 -->
-    <div class="grid grid-cols-3 gap-12px mb-12px">
+    <div class="grid grid-cols-3 gap-12px mb-12px import-channels">
       <el-card v-for="ch in channels" :key="ch.type" shadow="never">
         <div class="text-28px">{{ ch.icon }}</div>
         <div class="font-bold text-14px mt-4px">{{ ch.title }}</div>
         <div class="text-12px text-gray-500 mt-6px" style="min-height: 54px">{{ ch.desc }}</div>
         <div class="text-11px text-gray-400 mb-8px">{{ ch.type === '商品列表' ? '原始表格归档 · 重复导入沿用原编码' : '原始文件自动归档 · 整批可回滚' }}</div>
-        <el-upload
+        <el-button v-if="ch.type === '商品列表'" class="workspace-entry" type="primary" @click="showProductWorkspace">进入下方商品录入区</el-button>
+        <el-upload v-else
           :show-file-list="false"
           accept=".xls,.xlsx"
           :http-request="makeUploader(ch.type)"
@@ -495,6 +499,10 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
           </div>
         </el-upload>
       </el-card>
+    </div>
+
+    <div ref="productWorkspaceAnchor" id="product-import-workspace">
+      <SmartProductImportDialog ref="productWorkspace" embedded @saved="loadBatches" />
     </div>
 
     <!-- 期初导入向导入口(M1-6) -->
@@ -654,7 +662,6 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
     </el-card>
 
     <ImportFileDrawer v-model="fileVisible" :batch="fileBatch" />
-    <SmartProductImportDialog v-model:visible="smartVisible" :initial-file="smartFile" @saved="loadBatches" />
 
     <!-- 预览确认对话框(两步式第②步) -->
     <el-dialog v-model="previewVisible" :title="`预览核对 · ${preview?.fileName ?? ''}`" width="min(1120px, 96vw)" top="4vh">
@@ -1008,6 +1015,10 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
 </template>
 
 <style scoped>
+.workspace-entry { width: 100%; min-height: 52px; }
+#product-import-workspace { scroll-margin-top: 16px; }
+.import-channels :deep(.el-upload-dragger) { padding: 8px 14px; }
+@media (max-width: 900px) { .import-channels { grid-template-columns: 1fr; } }
 .batch-actions {
   display: flex;
   align-items: center;

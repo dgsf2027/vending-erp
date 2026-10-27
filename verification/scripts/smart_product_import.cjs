@@ -15,8 +15,9 @@ const fixtures = [
   { rowNo: 5, productName: '测试巧克力20g', sourceCode: '00103', barcode: '00789', action: '新增商品', unit: '块', boxSpec: '10', skuCode: '' },
 ];
 const clone = value => JSON.parse(JSON.stringify(value));
-const errors = [], commits = [], unexpected = [], passed = [];
-let genericUploads = 0, parseCalls = 0;
+const errors = [], commits = [], manualCommits = [], unexpected = [], passed = [];
+let genericUploads = 0, parseCalls = 0, templateCalls = 0;
+let failParse = true;
 const ok = (route, data) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 200, data }) });
 const check = async (fn, message) => {
   const end = Date.now() + 12000;
@@ -35,7 +36,15 @@ const check = async (fn, message) => {
     if (!url.pathname.startsWith('/api/')) return route.continue();
     if (url.pathname.endsWith('/smart-import/parse')) {
       parseCalls++; assert.match(req.headers()['content-type'], /multipart\/form-data; boundary=/);
+      if (failParse) {
+        failParse = false;
+        return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ message: 'Not found' }) });
+      }
       return ok(route, { token: 'test-upload', fileName: '测试商品.xlsx', rows: clone(fixtures) });
+    }
+    if (url.pathname.endsWith('/smart-import/template')) {
+      templateCalls++; assert.equal(req.headers().authorization, 'Bearer smart-product-test');
+      return route.fulfill({ status: 200, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', body: Buffer.from('UI download fixture; actual XLSX format tested by controller tests') });
     }
     if (url.pathname.endsWith('/smart-import/review')) {
       const rows = req.postDataJSON().rows;
@@ -49,7 +58,13 @@ const check = async (fn, message) => {
       return ok(route, { rows, errorCount: rows.filter(r => r.action === '资料缺失').length });
     }
     if (url.pathname.endsWith('/smart-import/commit')) {
-      const payload = req.postDataJSON(); commits.push(payload);
+      const payload = req.postDataJSON();
+      if (payload.manualEntry) {
+        manualCommits.push(payload); assert.equal(payload.token, '');
+        return ok(route, { created: payload.rows.length, matched: 0, updated: 0, failed: 0,
+          savedRows: payload.rows.map(r => ({ ...r, skuCode: 'SP000900', action: '已新增' })), failedRows: [], errors: [] });
+      }
+      commits.push(payload);
       assert.equal(payload.token, 'test-upload');
       const fail = commits.length === 1 ? payload.rows.filter(r => r.rowNo === 5).map(r => ({ ...r, action: '资料缺失', errorMsg: '模拟保存失败，请重新检查' })) : [];
       const saved = payload.rows.filter(r => !fail.some(f => f.rowNo === r.rowNo)).map(r => ({
@@ -72,11 +87,23 @@ const check = async (fn, message) => {
   });
   try {
     await page.goto(base + '/import');
-    const card = page.locator('.el-card').filter({ hasText: '通道③ 商品列表' });
-    await card.locator('input[type=file]').setInputFiles({ name: '测试商品.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from('synthetic') });
-    const dialog = page.getByRole('dialog', { name: '商品列表 · 自动建档与编号' });
+    const dialog = page.locator('#product-import-workspace');
+    await dialog.getByText('商品导入工作台', { exact: true }).waitFor();
+    await dialog.getByRole('columnheader', { name: 'ERP 编码 / 原始标识' }).waitFor();
+    assert.equal(await dialog.getByRole('button', { name: /确认入档/ }).isDisabled(), true);
+    assert.equal(parseCalls, 0);
+    await page.screenshot({ path: path.join(out, 'always-visible-workspace.png'), fullPage: true });
+    const templateDownload = page.waitForEvent('download');
+    await dialog.getByRole('button', { name: '下载模板', exact: true }).click();
+    assert.equal((await templateDownload).suggestedFilename(), '商品自动编号模板.xlsx');
+    assert.equal(templateCalls, 1);
+    const fixture = { name: '测试商品.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from('synthetic') };
+    await dialog.locator('input[type=file]').setInputFiles(fixture);
+    await dialog.getByText(/读取「测试商品.xlsx」失败：接口暂不可用/).waitFor();
+    await dialog.locator('input[type=file]').setInputFiles(fixture);
     await dialog.getByText('测试商品.xlsx', { exact: true }).waitFor();
-    assert.equal(parseCalls, 1); assert.equal(genericUploads, 0);
+    assert.equal(parseCalls, 2); assert.equal(genericUploads, 0);
+    passed.push('workspace controls visible before upload, authenticated template download and persistent upload error/retry');
     assert.equal(await dialog.getByRole('button', { name: /确认入档/ }).isDisabled(), true);
     assert.equal(await dialog.getByRole('checkbox', { name: '更新已有商品资料' }).isChecked(), false);
     await dialog.getByRole('textbox', { name: '批量基本单位', exact: true }).fill('袋');
@@ -105,19 +132,40 @@ const check = async (fn, message) => {
     assert.equal((await downloadPromise).suggestedFilename(), '商品编码对照.csv');
     await page.screenshot({ path: path.join(out, 'smart-product-result.png'), fullPage: true });
     passed.push('partial failure retains only failed row, successful codes visible and downloadable');
-    await dialog.getByRole('button', { name: '完成', exact: true }).click();
     const sale = page.locator('.el-card').filter({ hasText: '通道① 出货明细' });
     await sale.locator('input[type=file]').setInputFiles({ name: '销售.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from('synthetic') });
     await page.getByRole('dialog', { name: /预览核对/ }).waitFor(); assert.equal(genericUploads, 1);
     passed.push('sales import retains original flow');
+    await page.goto(base + '/import');
+    await dialog.getByRole('button', { name: '＋ 手工添加商品', exact: true }).click();
+    await dialog.getByRole('textbox', { name: '商品名称第1行', exact: true }).fill('测试手工新商品');
+    await dialog.getByRole('textbox', { name: '基本单位第1行', exact: true }).fill('瓶');
+    await dialog.getByRole('textbox', { name: '每箱数量第1行', exact: true }).fill('24');
+    await dialog.getByRole('button', { name: '＋ 手工添加商品', exact: true }).click();
+    await dialog.getByRole('button', { name: '移除第2行', exact: true }).click();
+    await dialog.getByRole('button', { name: '重新检查', exact: true }).click();
+    await check(async () => await dialog.getByRole('button', { name: /确认入档/ }).isEnabled(), 'manual entry not ready');
+    await dialog.getByRole('button', { name: /确认入档/ }).click();
+    await dialog.getByText('SP000900', { exact: true }).waitFor();
+    assert.equal(manualCommits.length, 1); assert.equal(manualCommits[0].rows.length, 1);
+    passed.push('manual rows without uploading: add, remove, review, commit and generated code');
     await page.goto(base + '/products');
     await page.getByRole('button', { name: /新建商品/ }).click();
     const form = page.getByRole('dialog', { name: '新建商品', exact: true });
     await form.getByPlaceholder('采购商品名(主名称)').fill('测试自动编号商品');
     await form.getByRole('button', { name: '保存', exact: true }).click();
     await page.getByText('商品已建档，编码：SP000020', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '⬆ 导入商品列表', exact: true }).click();
+    const modal = page.getByRole('dialog', { name: '商品列表 · 自动建档与编号', exact: true });
+    await modal.getByRole('button', { name: '下载模板', exact: true }).waitFor();
+    await modal.getByRole('button', { name: '＋ 手工添加商品', exact: true }).click();
+    await modal.getByRole('textbox', { name: '商品名称第1行', exact: true }).fill('关闭后保留的录入内容');
+    await modal.getByRole('button', { name: '关闭', exact: true }).click();
+    await page.getByRole('button', { name: '⬆ 导入商品列表', exact: true }).click();
+    assert.equal(await modal.getByRole('textbox', { name: '商品名称第1行', exact: true }).inputValue(), '关闭后保留的录入内容');
+    passed.push('product catalog dialog shows controls before upload and retains edits when reopened');
     assert.deepEqual(unexpected, []); assert.deepEqual(errors, []);
-    fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify({ passed, commits: commits.length, errors }, null, 2));
+    fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify({ passed, commits: commits.length, manualCommits: manualCommits.length, errors }, null, 2));
     console.log(JSON.stringify({ passed, output: out }, null, 2));
   } catch (error) {
     await page.screenshot({ path: path.join(out, 'failure.png'), fullPage: true });

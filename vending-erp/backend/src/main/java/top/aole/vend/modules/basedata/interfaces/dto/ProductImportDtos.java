@@ -80,6 +80,7 @@ public final class ProductImportDtos {
     @Data
     public static class CommitReq {
         private String token;
+        private boolean manualEntry;
         @NotEmpty(message = "没有可导入的行")
         private List<Row> rows;
     }

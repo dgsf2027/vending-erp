@@ -266,15 +266,15 @@ export async function downloadProductImportTemplate(): Promise<void> {
 export function parseSmartProductImport(file: File): Promise<ProductImportParseResp> {
   const form = new FormData()
   form.append('file', file)
-  return request.post('/v1/basedata/products/smart-import/parse', form, { timeout: 120000 })
+  return request.post('/v1/basedata/products/smart-import/parse', form, { timeout: 120000, silentError: true })
 }
 
 export function reviewSmartProductImport(rows: ProductImportRow[]): Promise<ProductImportParseResp> {
-  return request.post('/v1/basedata/products/smart-import/review', { rows }, { timeout: 120000 })
+  return request.post('/v1/basedata/products/smart-import/review', { rows }, { timeout: 120000, silentError: true })
 }
 
-export function commitSmartProductImport(token: string, rows: ProductImportRow[]): Promise<ProductImportCommitResp> {
-  return request.post('/v1/basedata/products/smart-import/commit', { token, rows }, { ...opHeaders(), timeout: 300000 })
+export function commitSmartProductImport(token: string, rows: ProductImportRow[], manualEntry = false): Promise<ProductImportCommitResp> {
+  return request.post('/v1/basedata/products/smart-import/commit', { token, rows, manualEntry }, { ...opHeaders(), timeout: 300000, silentError: true })
 }
 
 export async function downloadSmartProductTemplate(): Promise<void> {

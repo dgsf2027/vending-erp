@@ -149,4 +149,21 @@ class SmartProductImportServiceTest {
         assertThrows(BizException.class,() -> service.review(Arrays.asList(row,row)));
         verifyNoInteractions(batches);
     }
+
+    @Test void manualRowsWithoutFileGetCodesAndAReadableArchivedSnapshot() throws Exception {
+        ProductImportDtos.Row row = ProductCatalogMatcherTest.row("手工新品饮料", "001000");
+        row.setRowNo(9); row.setSourceCode("00089"); row.setUnit("瓶"); row.setBoxSpec("24");
+        ProductImportDtos.CommitResp result = service.commitManual(Collections.singletonList(row), "测试");
+        assertEquals(1,result.getCreated()); assertEquals("SP000001",result.getSavedRows().get(0).getSkuCode());
+        org.mockito.ArgumentCaptor<ImportBatch> batch = org.mockito.ArgumentCaptor.forClass(ImportBatch.class);
+        verify(batches).insert(batch.capture());
+        try (XSSFWorkbook workbook = new XSSFWorkbook(Files.newInputStream(Paths.get(batch.getValue().getArchivePath())))) {
+            assertEquals("手工商品录入",workbook.getSheetAt(0).getSheetName());
+            assertEquals("9",workbook.getSheetAt(0).getRow(1).getCell(0).getStringCellValue());
+            assertEquals("00089",workbook.getSheetAt(0).getRow(1).getCell(1).getStringCellValue());
+            assertEquals("001000",workbook.getSheetAt(0).getRow(1).getCell(3).getStringCellValue());
+        }
+        assertEquals(1,service.commitManual(Collections.singletonList(row),"测试").getMatched());
+        assertEquals(1,db.queryForObject("SELECT count(*) FROM product",Integer.class));
+    }
 }
