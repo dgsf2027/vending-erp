@@ -192,12 +192,22 @@ export interface ProductImportRow {
   /** 在售/清仓中/停售;留空 = 新建按「在售」建档、更新保持原状态不动 */
   productStatus?: string | null
   remark?: string | null
-  action?: '新建' | '更新' | '错误'
+  action?: string
+  sourceCode?: string | null
+  sourceName?: string | null
+  sourceSpec?: string | null
+  selectedProductId?: number | null
+  confirmNew?: boolean
+  updateExisting?: boolean
+  matchReason?: string | null
+  matchedProductName?: string | null
+  candidates?: Product[]
   errorMsg?: string | null
   existingProductId?: number | null
 }
 
 export interface ProductImportParseResp {
+  token?: string
   fileName: string
   rowTotal: number
   createCount: number
@@ -211,6 +221,10 @@ export interface ProductImportParseResp {
 }
 
 export interface ProductImportCommitResp {
+  batchId?: number
+  matched?: number
+  savedRows?: ProductImportRow[]
+  failedRows?: ProductImportRow[]
   created: number
   updated: number
   failed: number
@@ -246,6 +260,30 @@ export async function downloadProductImportTemplate(): Promise<void> {
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+export function parseSmartProductImport(file: File): Promise<ProductImportParseResp> {
+  const form = new FormData()
+  form.append('file', file)
+  return request.post('/v1/basedata/products/smart-import/parse', form, { timeout: 120000 })
+}
+
+export function reviewSmartProductImport(rows: ProductImportRow[]): Promise<ProductImportParseResp> {
+  return request.post('/v1/basedata/products/smart-import/review', { rows }, { timeout: 120000 })
+}
+
+export function commitSmartProductImport(token: string, rows: ProductImportRow[]): Promise<ProductImportCommitResp> {
+  return request.post('/v1/basedata/products/smart-import/commit', { token, rows }, { ...opHeaders(), timeout: 300000 })
+}
+
+export async function downloadSmartProductTemplate(): Promise<void> {
+  const blob = await request.get('/v1/basedata/products/smart-import/template', { responseType: 'blob' }) as unknown as Blob
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = '商品自动编号模板.xlsx'
+  link.click()
   URL.revokeObjectURL(url)
 }
 

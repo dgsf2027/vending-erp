@@ -360,6 +360,9 @@ public class ImportService {
         if (orig == null) {
             throw new BizException("原批次不存在");
         }
+        if (orig.getColumnMapJson() != null && orig.getColumnMapJson().contains("smart-product")) {
+            throw new BizException("请在商品自动建档预览中重试失败行，或重新上传原表格；已有商品会沿用原编码");
+        }
         if (rows == null || rows.isEmpty()) {
             throw new BizException("没有要重导的行");
         }

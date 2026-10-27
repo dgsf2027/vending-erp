@@ -6,6 +6,7 @@ import lombok.Data;
 import javax.validation.constraints.NotEmpty;
 import java.util.ArrayList;
 import java.util.List;
+import top.aole.vend.modules.basedata.domain.entity.Product;
 
 /**
  * 商品建档导入(附件上传 → 自动解析 → 落到列表 → 确认入档)的请求/响应体。
@@ -28,6 +29,17 @@ public final class ProductImportDtos {
         /** Excel 里的行号(报错定位用) */
         private Integer rowNo;
         private String skuCode;
+        /** 原后台编号与 ERP 编码分开保存。 */
+        private String sourceCode;
+        private String sourceName;
+        private String sourceSpec;
+        /** 用户明确选择的已有档案；服务端仍会检查条码/编号冲突。 */
+        private Long selectedProductId;
+        private boolean confirmNew;
+        private boolean updateExisting;
+        private String matchReason;
+        private String matchedProductName;
+        private List<Product> candidates = new ArrayList<>();
         private String productName;
         private String barcode;
         private String category;
@@ -51,6 +63,7 @@ public final class ProductImportDtos {
     /** 解析结果:一次把「有多少行、几条新建、几条更新、哪行有问题」全给出来 */
     @Data
     public static class ParseResp {
+        private String token;
         private String fileName;
         private int rowTotal;
         private int createCount;
@@ -66,12 +79,15 @@ public final class ProductImportDtos {
 
     @Data
     public static class CommitReq {
+        private String token;
         @NotEmpty(message = "没有可导入的行")
         private List<Row> rows;
     }
 
     @Data
     public static class CommitResp {
+        private Long batchId;
+        private int matched;
         private int created;
         private int updated;
         private int failed;
@@ -80,6 +96,8 @@ public final class ProductImportDtos {
         /** 顺带从「待绑别名」队列里消掉的条数 */
         private int pendingCleared;
         private List<RowError> errors = new ArrayList<>();
+        private List<Row> savedRows = new ArrayList<>();
+        private List<Row> failedRows = new ArrayList<>();
     }
 
     @Data

@@ -33,6 +33,7 @@ public class ProductService {
     private final ProductMapper productMapper;
     private final PriceLogMapper priceLogMapper;
     private final OpLogService opLogService;
+    private final ProductCodeService productCodeService;
 
     /** 分页列表:名称/编码/条码 关键字 + 分类 + 状态 筛选 */
     public Page<Product> page(long current, long size, String keyword, String category, String productStatus) {
@@ -83,9 +84,11 @@ public class ProductService {
 
     @Transactional(rollbackFor = Exception.class)
     public Product create(Product product, String operator) {
-        if (StrUtil.isBlank(product.getSkuCode()) || StrUtil.isBlank(product.getProductName())) {
-            throw new BizException("SKU 编码与商品名不能为空");
+        if (StrUtil.isBlank(product.getProductName())) {
+            throw new BizException("商品名不能为空");
         }
+        productCodeService.lock();
+        if (StrUtil.isBlank(product.getSkuCode())) product.setSkuCode(productCodeService.nextCode());
         Long dup = productMapper.selectCount(new LambdaQueryWrapper<Product>()
                 .eq(Product::getSkuCode, product.getSkuCode()));
         if (dup != null && dup > 0) {
@@ -106,6 +109,7 @@ public class ProductService {
     /** 编辑:refPrice 变化时额外写 price_log(手工来源) */
     @Transactional(rollbackFor = Exception.class)
     public Product update(Long id, Product incoming, String operator) {
+        productCodeService.lock();
         Product before = getById(id);
         if (StrUtil.isNotBlank(incoming.getSkuCode()) && !incoming.getSkuCode().equals(before.getSkuCode())) {
             throw new BizException("SKU 编码不允许修改(需要拆分请走一码多品清洗流程)");

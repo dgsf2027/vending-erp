@@ -49,8 +49,8 @@ watch(
 )
 
 async function save() {
-  if (!form.skuCode || !form.productName) {
-    ElMessage.warning('SKU 编码与商品名必填')
+  if (!form.productName.trim()) {
+    ElMessage.warning('请填写商品名称')
     return
   }
   saving.value = true
@@ -70,8 +70,8 @@ async function save() {
       await updateProduct(props.product.id, payload)
       ElMessage.success('已保存(改动已记操作日志;售价变化另记改价留痕)')
     } else {
-      await createProduct(payload)
-      ElMessage.success('商品已建档')
+      const saved = await createProduct(payload)
+      ElMessage.success('商品已建档，编码：' + saved.skuCode)
     }
     emit('update:visible', false)
     emit('saved')
@@ -91,8 +91,8 @@ async function save() {
     <el-form label-width="110px">
       <el-row :gutter="12">
         <el-col :span="12">
-          <el-form-item label="商品编号" required>
-            <el-input v-model="form.skuCode" :disabled="isEdit" placeholder="如 SP101" />
+          <el-form-item label="ERP 编码">
+            <el-input v-model="form.skuCode" :disabled="isEdit" placeholder="留空，保存时自动编号" />
           </el-form-item>
         </el-col>
         <el-col :span="12">

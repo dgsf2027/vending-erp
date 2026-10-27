@@ -28,6 +28,7 @@ public class AliasService {
     private final AliasPendingMapper aliasPendingMapper;
     private final ProductService productService;
     private final OpLogService opLogService;
+    private final ProductCodeService productCodeService;
 
     /** 别名分页列表:可按商品过滤、按 编号/条码/名称 关键字搜 */
     public Page<SkuAlias> page(long current, long size, Long productId, String keyword) {
@@ -45,6 +46,7 @@ public class AliasService {
     /** 绑定:同 编号+条码 已有绑定则改绑(留 op_log),否则新增 */
     @Transactional(rollbackFor = Exception.class)
     public SkuAlias bind(Dtos.BindAliasReq req, String operator) {
+        productCodeService.lock();
         String aliasCode = StrUtil.nullToEmpty(StrUtil.trim(req.getAliasCode()));
         String aliasBarcode = StrUtil.nullToEmpty(StrUtil.trim(req.getAliasBarcode()));
         if (aliasCode.isEmpty() && aliasBarcode.isEmpty()) {
