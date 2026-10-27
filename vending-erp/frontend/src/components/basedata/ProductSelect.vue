@@ -9,13 +9,15 @@ import { getProduct, pageProducts, type Product } from '@/api/basedata'
 const props = defineProps<{
   modelValue?: number | null
   placeholder?: string
+  initialProduct?: Product | null
+  lazy?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: number | null): void
 }>()
 
-const options = ref<Product[]>([])
+const options = ref<Product[]>(props.initialProduct ? [props.initialProduct] : [])
 const loading = ref(false)
 
 async function search(keyword: string) {
@@ -33,9 +35,15 @@ async function search(keyword: string) {
 function onChange(value: number | null) {
   emit('update:modelValue', value)
 }
+function onVisibleChange(visible: boolean) {
+  if (visible && props.lazy) search('')
+}
 
 // 初始载入一页,便于直接下拉选
-search('')
+if (!props.lazy) search('')
+watch(() => props.initialProduct, (product) => {
+  if (product && !options.value.some(p => p.id === product.id)) options.value.unshift(product)
+})
 watch(() => props.modelValue, async (id) => {
   if (!id || options.value.some((p) => p.id === id)) return
   try {
@@ -58,6 +66,7 @@ watch(() => props.modelValue, async (id) => {
     :placeholder="props.placeholder || '搜商品名/编码/条码'"
     style="width: 100%"
     @update:model-value="onChange"
+    @visible-change="onVisibleChange"
   >
     <el-option
       v-for="p in options"

@@ -6,7 +6,7 @@ import ProductSelect from '@/components/basedata/ProductSelect.vue'
 import { getProduct } from '@/api/basedata'
 import type { Supplier } from '@/api/basedata'
 import {
-  previewPurchasePhoto, type PurchasePhotoDraft, type PurchasePhotoLine, type PurchasePhotoPreview,
+  previewPurchasePhoto, type PurchasePhotoCandidate, type PurchasePhotoDraft, type PurchasePhotoLine, type PurchasePhotoPreview,
 } from '@/api/purchase'
 
 const props = defineProps<{ modelValue: boolean; suppliers: Supplier[] }>()
@@ -15,7 +15,8 @@ const emit = defineEmits<{
   (e: 'import', draft: PurchasePhotoDraft): void
 }>()
 
-type ReviewLine = PurchasePhotoLine & { include: boolean }
+type UnitMode = 'base' | 'box'
+type ReviewLine = PurchasePhotoLine & { include: boolean; productLoading?: boolean; manual?: boolean }
 const busy = ref(false)
 const imageUrl = ref('')
 const fileName = ref('')
@@ -28,6 +29,9 @@ const lines = ref<ReviewLine[]>([])
 const supplierId = ref<number | null>(null)
 const bizDate = ref('')
 const acknowledged = ref(false)
+const batchUnit = ref<UnitMode | 'recognized'>('recognized')
+const onlyPending = ref(false)
+const showOriginal = ref(true)
 let generation = 0
 let controller: AbortController | null = null
 let elapsedTimer: ReturnType<typeof setInterval> | null = null
@@ -55,6 +59,8 @@ function clear() {
   supplierId.value = null
   bizDate.value = ''
   acknowledged.value = false
+  batchUnit.value = 'recognized'
+  onlyPending.value = false
 }
 watch(() => props.modelValue, (open) => { if (!open) clear() })
 watch(lines, () => { acknowledged.value = false }, { deep: true })
@@ -151,26 +157,65 @@ function addManualLine() {
     sourceUnit: null, sourceSpec: null,
     productName: null, skuCode: null, boxSpec: null, unit: null,
     qty: null, unitPrice: null, sourceAmount: null, calculatedAmount: null,
-    crossedOut: false, uncertain: true, warnings: [], include: true, unitMode: null,
+    crossedOut: false, uncertain: true, warnings: [], include: true, manual: true,
+    unitMode: batchUnit.value === 'recognized' ? null : batchUnit.value,
   })
 }
 
 const included = computed(() => lines.value.filter((line) => line.include))
+function detectedUnit(line: ReviewLine): UnitMode | null {
+  const source = line.sourceUnit?.normalize('NFKC').replace(/\s+/g, '')
+  if (!source) return null
+  if (source === line.unit?.normalize('NFKC').replace(/\s+/g, '')) return 'base'
+  return ['箱', '件', '整箱', '整件'].includes(source) ? 'box' : null
+}
+function applyBatchUnit() {
+  for (const line of included.value) {
+    line.unitMode = batchUnit.value === 'recognized' ? detectedUnit(line) : batchUnit.value
+  }
+}
+function includeLine(line: ReviewLine) {
+  if (line.include && batchUnit.value !== 'recognized') line.unitMode = batchUnit.value
+}
+function chooseCandidate(line: ReviewLine, candidate: PurchasePhotoCandidate) {
+  line.productId = candidate.productId
+  line.productName = candidate.productName
+  line.skuCode = candidate.skuCode
+  line.boxSpec = candidate.boxSpec == null ? null : Number(candidate.boxSpec)
+  line.unit = candidate.unit
+  line.matchKind = 'manual'
+  line.productLoading = false
+  line.unitMode = batchUnit.value === 'recognized' ? detectedUnit(line) : batchUnit.value
+}
+function otherCandidates(line: ReviewLine) {
+  return (line.candidates || []).filter(candidate => candidate.productId !== line.productId)
+}
 async function selectProduct(line: ReviewLine, id: number | null) {
   line.productId = id
-  // 识别时的口径依赖当时匹配的商品；换商品后必须重新确认。
-  line.unitMode = null
+  line.productName = null
+  line.skuCode = null
+  line.matchKind = 'manual'
+  line.unitMode = batchUnit.value === 'recognized' ? null : batchUnit.value
   line.boxSpec = null
   line.unit = null
+  line.productLoading = !!id
   if (!id) return
   try {
     const product = await getProduct(id)
     if (line.productId === id) {
       line.boxSpec = product.boxSpec == null ? null : Number(product.boxSpec)
       line.unit = product.unit || null
+      line.productName = product.productName
+      line.skuCode = product.skuCode
+      line.unitMode = batchUnit.value === 'recognized' ? detectedUnit(line) : batchUnit.value
+      line.productLoading = false
     }
   } catch {
-    ElMessage.error('读取商品箱规失败，请重新选择商品')
+    if (line.productId === id) {
+      line.productLoading = false
+      line.productId = null
+      ElMessage.error('读取商品资料失败，请重新选择商品')
+    }
   }
 }
 function purchaseQty(line: ReviewLine): number {
@@ -184,13 +229,35 @@ const total = computed(() => included.value.reduce((sum, line) =>
   sum + Number(line.qty || 0) * Number(line.unitPrice || 0), 0))
 const totalDiff = computed(() => preview.value?.declaredTotal != null &&
   Math.abs(total.value - Number(preview.value.declaredTotal)) > 0.01)
-const reviewNeeded = computed(() => totalDiff.value || included.value.some((line) =>
-  line.uncertain || (line.sourceAmount != null &&
-    Math.abs(Number(line.sourceAmount) - Number(line.qty || 0) * Number(line.unitPrice || 0)) > 0.01)))
+function amountDiff(line: ReviewLine) {
+  return line.sourceAmount != null && Math.abs(Number(line.sourceAmount)
+    - Number(line.qty || 0) * Number(line.unitPrice || 0)) > 0.01
+}
+function issues(line: ReviewLine): string[] {
+  const messages: string[] = []
+  if (line.productLoading) messages.push('正在读取商品资料')
+  else if (!line.productId) messages.push(line.candidates?.length ? '请选择一个候选商品' : '请搜索商品档案')
+  if (!line.unitMode) messages.push('请在上方统一选择数量单位')
+  if (line.unitMode === 'box' && !(Number.isInteger(Number(line.boxSpec)) && Number(line.boxSpec) > 0)) messages.push('请填写每箱数量')
+  if (!(Number(line.qty) > 0) || !(Number(line.unitPrice) > 0)) messages.push('请补齐数量和单价')
+  return messages
+}
+const unresolved = computed(() => included.value.filter(line => issues(line).length))
+const suggested = computed(() => included.value.filter(line => line.matchKind === 'suggested'))
+const pending = (line: ReviewLine) => line.include && (issues(line).length > 0 || line.matchKind === 'suggested' || line.uncertain || amountDiff(line))
+const visibleLines = computed(() => onlyPending.value ? lines.value.filter(pending) : lines.value)
+const pendingCount = computed(() => lines.value.filter(pending).length)
+function rowClass({ row }: { row: ReviewLine }): string {
+  return !row.include ? 'photo-excluded-row' : issues(row).length ? 'photo-pending-row' : ''
+}
+const reviewNeeded = computed(() => totalDiff.value || suggested.value.length > 0 ||
+  included.value.some(line => line.uncertain || amountDiff(line)))
+const headerWarnings = computed(() => (preview.value?.warnings || []).filter(warning =>
+  !(warning.includes('日期') && bizDate.value) && !(warning.includes('供应商') && supplierId.value) && !warning.includes('合计')))
 const canApply = computed(() => !busy.value && !requestError.value &&
   (!!preview.value?.rows.length || manualMode.value) && !!supplierId.value && !!bizDate.value &&
   included.value.length > 0 && included.value.every((line) =>
-    !!line.productId && !!line.unitMode && Number(line.qty) > 0 && Number(line.unitPrice) > 0 &&
+    !line.productLoading && !!line.productId && !!line.unitMode && Number(line.qty) > 0 && Number(line.unitPrice) > 0 &&
     (line.unitMode !== 'box' || (Number.isInteger(Number(line.boxSpec)) && Number(line.boxSpec) > 0))) &&
   (!reviewNeeded.value || acknowledged.value))
 
@@ -215,19 +282,21 @@ function apply() {
 </script>
 
 <template>
-  <el-dialog :model-value="modelValue" title="📷 拍照识别拿货单" width="min(1320px, 97vw)"
+  <el-dialog :model-value="modelValue" title="拍照识别拿货单" width="min(1500px, 97vw)" top="3vh"
     :close-on-click-modal="false" @update:model-value="emit('update:modelValue', $event)">
-    <el-alert type="info" :closable="false" class="mb-12px"
-      title="上传照片后自动识别并填写明细；请核对商品、数量、单价和单位。不明确的单位需手动选择，划掉的行默认排除。只生成草稿，不会自动入库。" />
     <div class="photo-actions">
       <label class="photo-pick">
         {{ fileName ? '重新选择照片' : '选择拿货单照片（JPG / PNG）' }}
         <input type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" hidden @change="onPick" />
       </label>
-      <span v-if="fileName" class="mini">{{ fileName }}</span>
+      <span class="mini">自动匹配商品 → 统一设置单位 → 核对后生成草稿</span>
+      <el-button v-if="imageUrl" link type="primary" @click="showOriginal = !showOriginal">{{ showOriginal ? '收起原图' : '展开原图' }}</el-button>
     </div>
-    <div v-if="imageUrl" class="photo-layout">
-      <div class="photo-original"><img :src="imageUrl" alt="原始拿货单照片" /></div>
+    <div v-if="imageUrl" class="photo-layout" :class="{ 'photo-layout-wide': !showOriginal }">
+      <div v-show="showOriginal" class="photo-original">
+        <div class="photo-original-title">原始单据 <span>{{ fileName }}</span></div>
+        <img :src="imageUrl" alt="原始拿货单照片" />
+      </div>
       <div class="photo-review" :aria-busy="busy">
         <div v-if="busy" class="photo-progress" role="status" aria-live="polite">
           <p>正在识别商品、数量和金额 · 已等待 {{ elapsedSeconds }} 秒</p>
@@ -241,83 +310,147 @@ function apply() {
           </div>
         </template>
         <template v-if="preview || manualMode">
-          <el-alert v-if="manualMode" type="info" :closable="false" title="手工录入：请对照左侧原图填写，当前没有 AI 识别结果。" />
+          <el-alert v-if="manualMode" type="info" :closable="false" title="手工录入：请对照原图填写。" />
           <div v-if="preview" class="photo-meta">
-            <span>票面单号：<b>{{ preview.documentNo || '未识别' }}</b></span>
-            <span>识别的送货方：<b>{{ preview.supplierName || '未识别' }}</b></span>
+            <span>单号 <b>{{ preview.documentNo || '未识别' }}</b></span>
+            <span>送货方 <b>{{ preview.supplierName || '未识别' }}</b></span>
           </div>
           <div class="photo-fields">
-            <el-select v-model="supplierId" filterable clearable placeholder="选择供应商（必选）">
+            <el-select v-model="supplierId" filterable clearable placeholder="选择供应商（必选）" aria-label="供应商">
               <el-option v-for="supplier in suppliers" :key="supplier.id" :label="supplier.supplierName" :value="supplier.id!" />
             </el-select>
             <el-date-picker v-model="bizDate" type="date" value-format="YYYY-MM-DD" placeholder="入库日期（必选）" />
           </div>
-          <el-alert v-for="warning in (preview?.warnings || [])" :key="warning" type="warning"
-            :closable="false" :title="warning" class="mb-8px" />
-          <el-table :data="lines" size="small" max-height="460">
-            <el-table-column label="计入" width="60"><template #default="{ row }"><el-checkbox v-model="row.include" /></template></el-table-column>
-            <el-table-column label="票面商品 / 档案匹配" min-width="220">
+          <div class="photo-batch">
+            <div class="photo-batch-heading"><b>整单数量单位</b><span class="mini">作用于计入的行，个别商品可在下方调整</span></div>
+            <el-radio-group v-model="batchUnit" aria-label="整单数量单位" @change="applyBatchUnit">
+              <el-radio-button label="recognized">按识别结果</el-radio-button>
+              <el-radio-button label="box">全部按箱</el-radio-button>
+              <el-radio-button label="base">全部按基本单位</el-radio-button>
+            </el-radio-group>
+            <el-button v-if="batchUnit !== 'recognized'" link type="primary" class="photo-batch-repeat" @click="applyBatchUnit">重新统一全部行</el-button>
+            <div class="mini photo-batch-hint">{{ batchUnit === 'box' ? '数量为箱数，单价为每箱价；每行按各自商品箱规折算。' : batchUnit === 'base' ? '数量和单价按商品的瓶、袋、盒等基本单位填写。' : '未识别单位时，在这里统一选择即可，无需逐行设置。' }}</div>
+          </div>
+          <el-alert v-for="warning in headerWarnings" :key="warning" type="warning" :closable="false" :title="warning" class="mb-8px" />
+          <div class="photo-summary">
+            <span>计入 <b>{{ included.length }}</b> 行 · 已匹配 <b>{{ included.filter(row => row.productId).length }}</b> 行<span v-if="suggested.length">（含 {{ suggested.length }} 行推荐）</span><span class="photo-warning" v-if="unresolved.length"> · 待补齐 {{ unresolved.length }} 行</span></span>
+            <el-checkbox v-model="onlyPending">只看待核对（{{ pendingCount }}）</el-checkbox>
+          </div>
+          <el-table :data="visibleLines" size="small" max-height="490" row-key="rowNo" class="photo-table"
+            :row-class-name="rowClass">
+            <el-table-column label="计入" width="46"><template #default="{ row }"><el-checkbox v-model="row.include" :aria-label="`计入第${row.rowNo}行`" @change="includeLine(row)" /></template></el-table-column>
+            <el-table-column label="匹配商品 / 票面名称" min-width="240">
               <template #default="{ row }">
-                <div class="photo-source">{{ row.rowNo }}. <el-input v-if="row.include" v-model="row.sourceName" size="small" placeholder="票面商品名（可修改）" style="width: 175px" /><span v-else>{{ row.sourceName || '未识别商品名' }}</span></div>
-                <div v-if="row.sourceUnit || row.sourceSpec" class="mini">票面单位：{{ row.sourceUnit || '未识别' }} · 规格：{{ row.sourceSpec || '未识别' }}</div>
-                <ProductSelect v-if="row.include" :model-value="row.productId" placeholder="核对或搜索商品档案" @update:model-value="selectProduct(row, $event)" />
-                <div v-if="row.include" class="photo-unit">
-                  <el-select v-model="row.unitMode" placeholder="票面数量单位" style="width: 130px">
-                    <el-option label="基本单位" value="base" />
-                    <el-option label="整箱" value="box" />
-                  </el-select>
-                  <el-input-number v-if="row.unitMode === 'box'" v-model="row.boxSpec" :controls="false" :min="1" :precision="0"
-                    size="small" style="width: 110px" placeholder="每箱数量" />
+                <ProductSelect v-if="row.include" :model-value="row.productId" :initial-product="row.productId && row.productName ? { id: row.productId, productName: row.productName, skuCode: row.skuCode || '' } : null" lazy placeholder="搜索商品或选择下方候选" @update:model-value="selectProduct(row, $event)" />
+                <div class="photo-source">
+                  <span class="photo-row-no">{{ row.rowNo }}.</span>
+                  <el-input v-if="manualMode || row.manual" v-model="row.sourceName" size="small" placeholder="票面商品名" />
+                  <span v-else>票面：{{ row.sourceName || '未识别商品名' }}<span v-if="row.sourceSpec"> · {{ row.sourceSpec }}</span></span>
+                  <el-tag v-if="row.include && row.matchKind === 'suggested'" type="warning" size="small">推荐 · 请核对</el-tag>
+                  <el-tag v-else-if="row.include && row.productId" type="success" size="small">{{ row.matchKind === 'manual' ? '已选择' : '已匹配' }}</el-tag>
                 </div>
-                <div v-if="row.include && row.unitMode" class="mini">
-                  入库 {{ purchaseQty(row) }} {{ row.unit || '基本单位' }} · 折算单价 ¥{{ basicPrice(row).toFixed(4) }}
+                <div v-if="row.include && otherCandidates(row).length && (row.matchKind === 'suggested' || !row.productId)" class="photo-candidates">
+                  <el-button v-for="candidate in otherCandidates(row)" :key="candidate.productId" size="small"
+                    :type="row.productId === candidate.productId ? 'primary' : 'default'" plain @click="chooseCandidate(row, candidate)">
+                    {{ candidate.productName }} · {{ candidate.skuCode }}
+                  </el-button>
                 </div>
+                <div v-if="row.include && issues(row).length" class="photo-warning">{{ issues(row).join('；') }}</div>
+                <div v-if="row.include && row.uncertain" class="photo-warning">字迹不清，请对照原图核对</div>
                 <span v-if="row.crossedOut" class="mini">票面疑似划掉，默认排除</span>
-                <div v-for="warning in row.warnings" :key="warning" class="photo-warning">{{ warning }}</div>
               </template>
             </el-table-column>
-            <el-table-column label="票面数量" width="100"><template #default="{ row }"><el-input-number v-if="row.include" v-model="row.qty" :controls="false" :min="0.001" size="small" style="width: 86px" /><span v-else>{{ row.qty ?? '—' }}</span></template></el-table-column>
-            <el-table-column label="票面单价" width="100"><template #default="{ row }"><el-input-number v-if="row.include" v-model="row.unitPrice" :controls="false" :min="0.0001" :precision="4" size="small" style="width: 86px" /><span v-else>{{ row.unitPrice ?? '—' }}</span></template></el-table-column>
-            <el-table-column label="票面金额" width="92"><template #default="{ row }">{{ row.sourceAmount ?? '—' }}</template></el-table-column>
-            <el-table-column label="复算金额" width="95"><template #default="{ row }">{{ row.include ? (Number(row.qty || 0) * Number(row.unitPrice || 0)).toFixed(2) : '—' }}</template></el-table-column>
+            <el-table-column label="数量单位 / 箱规" width="150">
+              <template #default="{ row }">
+                <div v-if="row.include" class="photo-unit">
+                  <el-select v-model="row.unitMode" placeholder="选择单位" size="small" aria-label="此行数量单位">
+                    <el-option label="整箱" value="box" />
+                    <el-option :label="row.unit ? `基本单位（${row.unit}）` : '基本单位'" value="base" />
+                  </el-select>
+                  <div v-if="row.unitMode === 'box'" class="photo-box-spec">
+                    <span>每箱</span><el-input-number v-model="row.boxSpec" class="photo-pack-input" :controls="false" :min="1" :precision="0" size="small" placeholder="数量" aria-label="每箱数量" /><span>{{ row.unit || '个' }}</span>
+                  </div>
+                  <div class="mini">票面单位：{{ row.sourceUnit || '未标明' }}</div>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="数量" width="86"><template #default="{ row }"><el-input-number v-if="row.include" v-model="row.qty" :controls="false" :min="0.001" size="small" aria-label="票面数量" /><span v-else>{{ row.qty ?? '—' }}</span></template></el-table-column>
+            <el-table-column label="单价（元）" width="96"><template #default="{ row }"><el-input-number v-if="row.include" v-model="row.unitPrice" :controls="false" :min="0.0001" :precision="4" size="small" aria-label="票面单价" /><span v-else>{{ row.unitPrice ?? '—' }}</span></template></el-table-column>
+            <el-table-column label="金额 / 入库折算" width="152">
+              <template #default="{ row }">
+                <b>{{ row.include ? (Number(row.qty || 0) * Number(row.unitPrice || 0)).toFixed(2) : '—' }}</b>
+                <div v-if="row.include && row.unitMode && !issues(row).length" class="mini">入库 {{ purchaseQty(row) }} {{ row.unit || '基本单位' }}<br />单价 ¥{{ basicPrice(row).toFixed(4) }}</div>
+                <div v-if="row.include && amountDiff(row)" class="photo-warning">票面金额 {{ row.sourceAmount }}，有差异</div>
+              </template>
+            </el-table-column>
+            <template #empty>{{ onlyPending ? '没有待核对的行，可查看全部明细' : '暂无商品明细' }}</template>
           </el-table>
           <el-button link type="primary" @click="addManualLine">＋ 手工添加一行</el-button>
-          <div class="photo-totals">票面合计 {{ preview?.declaredTotal ?? '未识别' }} 元 · 当前选择行复算 {{ total.toFixed(2) }} 元</div>
-          <el-alert v-if="totalDiff" type="warning" :closable="false" title="票面合计与当前复算不一致，请检查划掉的行及手写数字。" />
-          <el-checkbox v-if="reviewNeeded" v-model="acknowledged" class="photo-acknowledged">我已对照照片核对不清楚的字迹和金额差异，仍按当前明细继续</el-checkbox>
+          <div class="photo-totals"><span>票面合计 {{ preview?.declaredTotal ?? '未识别' }} 元</span><span>本次合计 <b>¥{{ total.toFixed(2) }}</b></span></div>
+          <el-alert v-if="totalDiff" type="warning" :closable="false" title="合计与票面不一致，请核对划掉的行及金额。" />
+          <el-checkbox v-if="reviewNeeded" v-model="acknowledged" class="photo-acknowledged">我已核对推荐商品、模糊字迹和金额差异，按当前明细继续</el-checkbox>
         </template>
       </div>
     </div>
     <template #footer>
-      <el-button @click="emit('update:modelValue', false)">取消</el-button>
-      <el-button type="primary" :disabled="!canApply || busy" @click="apply">生成入库草稿</el-button>
+      <div class="photo-footer">
+        <span class="mini">{{ unresolved.length ? `还有 ${unresolved.length} 行需要补齐` : !supplierId || !bizDate ? '请选择供应商和入库日期' : reviewNeeded && !acknowledged ? '核对完成后，勾选整单确认即可继续' : '生成草稿后确认入库，库存才会更新' }}</span>
+        <div><el-button @click="emit('update:modelValue', false)">取消</el-button><el-button type="primary" :disabled="!canApply || busy" @click="apply">生成入库草稿</el-button></div>
+      </div>
     </template>
   </el-dialog>
 </template>
 
 <style scoped>
-.photo-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; overflow-wrap: anywhere; }
-.photo-pick { color: #fff; background: #2d6b50; padding: 8px 14px; border-radius: 5px; cursor: pointer; }
-.photo-layout { display: grid; grid-template-columns: minmax(260px, 38%) minmax(0, 1fr); gap: 16px; }
-.photo-original { min-width: 0; max-height: 640px; overflow: auto; background: #eee; }
+.photo-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.photo-pick { color: #fff; background: #2d6b50; padding: 9px 16px; border-radius: 6px; cursor: pointer; }
+.photo-layout { display: grid; grid-template-columns: minmax(220px, 26%) minmax(0, 1fr); gap: 20px; }
+.photo-layout-wide { grid-template-columns: minmax(0, 1fr); }
+.photo-original { min-width: 0; max-height: 740px; overflow: auto; background: #f4f6f5; border: 1px solid #e5eae7; border-radius: 8px; align-self: start; }
+.photo-original-title { padding: 10px; font-size: 13px; font-weight: 600; }
+.photo-original-title span { display: block; font-weight: 400; font-size: 11px; overflow-wrap: anywhere; margin-top: 4px; color: #738078; }
 .photo-original img { display: block; width: 100%; height: auto; }
 .photo-review { min-width: 0; overflow-wrap: anywhere; }
 .photo-progress { padding: 16px 0; }
 .photo-error-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-.photo-fields { display: flex; gap: 10px; margin: 10px 0; }
+.photo-fields { display: flex; gap: 10px; margin: 10px 0 14px; }
 .photo-fields > * { flex: 1; min-width: 0; }
-.photo-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; }
-.photo-source { font-size: 12px; margin-bottom: 4px; }
-.photo-unit { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 3px; }
-.photo-warning { color: #b66300; font-size: 11px; margin-top: 3px; }
-.photo-totals { font-size: 13px; font-weight: 600; margin: 12px 0; }
-.photo-acknowledged { height: auto; white-space: normal; }
+.photo-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: #69766f; }
+.photo-batch { background: #f1f7f3; border: 1px solid #dce9df; border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+.photo-batch-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 8px; }
+.photo-batch-hint { margin-top: 8px; }
+.photo-batch-repeat { margin: 6px 0 0 10px; font-size: 12px; }
+.photo-summary { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 4px 0 8px; font-size: 12px; }
+.photo-source { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; font-size: 12px; margin-top: 5px; color: #6c7771; }
+.photo-source .el-input { width: 160px; }
+.photo-row-no { color: #8c9690; }
+.photo-unit { display: flex; flex-direction: column; gap: 5px; }
+.photo-box-spec { display: flex; align-items: center; gap: 4px; font-size: 12px; }
+.photo-box-spec > span { white-space: nowrap; flex-shrink: 0; }
+.photo-box-spec .photo-pack-input { width: 58px; min-width: 0; flex: 0 0 58px; }
+.photo-table :deep(.el-input-number) { max-width: 100%; width: 100%; }
+.photo-table :deep(.cell) { padding: 6px; }
+.photo-table :deep(.photo-excluded-row) { color: #929b96; background: #f6f7f6; }
+.photo-table :deep(.photo-pending-row) { background: #fffbf2; }
+.photo-candidates { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.photo-candidates .el-button { margin-left: 0; max-width: 100%; height: auto; padding: 5px 7px; }
+.photo-candidates :deep(.el-button > span) { white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.photo-warning { color: #a65d00; font-size: 12px; margin-top: 3px; }
+.photo-totals { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 13px; margin: 12px 0; }
+.photo-totals b { color: #2d6b50; font-size: 20px; }
+.photo-acknowledged { height: auto; white-space: normal; margin-top: 10px; }
 .photo-acknowledged :deep(.el-checkbox__label) { white-space: normal; }
-@media (max-width: 800px) {
+.photo-footer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; text-align: left; }
+@media (max-width: 1050px) {
   .photo-layout { grid-template-columns: minmax(0, 1fr); }
-  .photo-original { max-height: 260px; }
+  .photo-original { max-height: 230px; }
+  .photo-original img { max-width: 420px; margin: auto; }
+}
+@media (max-width: 600px) {
   .photo-fields { flex-direction: column; }
   .photo-fields > * { flex: none; width: 100%; }
   .photo-fields :deep(.el-date-editor.el-input) { width: 100%; }
+  .photo-batch :deep(.el-radio-button__inner) { padding: 8px; font-size: 12px; }
+  .photo-footer { justify-content: flex-end; }
 }
 </style>
