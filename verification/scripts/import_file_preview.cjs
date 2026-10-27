@@ -8,7 +8,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 
 const root = path.resolve(__dirname, '../..');
-const output = path.join(root, '.impeccable/review');
+const output = path.join(root, 'vending-erp/frontend/.vite/import-history-qa');
 const baseURL = process.env.IMPORT_PREVIEW_BASE_URL || 'http://127.0.0.1:5176';
 const token = 'synthetic-preview-test-token';
 const longName = '测试数据-出货明细-2026年09月-含多个工作表和长文件名称-原始Excel归档.xlsx';
@@ -74,6 +74,7 @@ async function setup(browser, viewport) {
     return ok({ records: [], total: 0, size: 10, current: 1 });
   });
   await page.goto(`${baseURL}/import`);
+  await page.getByRole('button', { name: '查看全部导入记录', exact: true }).click();
   await page.getByRole('button', { name: `查看表格：${longName}`, exact: true }).waitFor({ timeout: 10000 }).catch(async error => {
     await page.screenshot({ path: path.join(output, 'import-file-setup-error.png') });
     console.error(JSON.stringify({ body: await page.locator('body').innerText(), requests, errors }));
@@ -111,7 +112,7 @@ async function layout(page) {
 
 (async () => {
   fs.mkdirSync(output, { recursive: true });
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL });
   try {
     const { page, context } = await setup(browser, { width: 1440, height: 1000 });
     const filenameLayout = await page.getByRole('button', { name: `查看表格：${longName}`, exact: true }).evaluate(el => ({
