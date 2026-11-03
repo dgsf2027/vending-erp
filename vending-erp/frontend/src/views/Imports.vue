@@ -56,9 +56,9 @@ const channels: Channel[] = [
     title: '通道① · 销售导入',
     desc: '导入售卖机后台的出货明细，核对后生成销售记录。',
     purpose: '从后台导出《出货明细》，上传 .xls 或 .xlsx 文件。',
-    outcome: '按订单号和订单类型去重；无法匹配的商品进入待绑定队列。',
+    outcome: '已有商品沿用原码；首次出现的商品自动建档并分配 YQ 编码，身份冲突才需人工核对。',
     columns: ['订单号', '商品名称', '出货数量', '商品金额(元)', '设备ID', '订单类型', '出货时间'],
-    tags: ['出货明细', '重复自动跳过', '销售记录'],
+    tags: ['新品自动编号', '重复自动跳过', '销售记录'],
     relatedPath: '/reports', relatedLabel: '查看销售报表',
   },
   {
@@ -514,10 +514,31 @@ onBeforeRouteLeave(async () => {
 })
 
 const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回滚' ? 'info' : 'warning')
+const newProductsVisible = ref(false)
+const newProducts = ref<import('@/api/imports').AutoCreatedProduct[]>([])
+function batchNewProducts(batch: ImportBatch): import('@/api/imports').AutoCreatedProduct[] {
+  try {
+    const data = JSON.parse(batch.columnMapJson || '{}').autoCreatedProducts
+    return Array.isArray(data) ? data.filter(p => p && typeof p.skuCode === 'string' && typeof p.productName === 'string') : []
+  } catch { return [] }
+}
+function showNewProducts(products: import('@/api/imports').AutoCreatedProduct[]) {
+  newProducts.value = products
+  newProductsVisible.value = true
+}
 </script>
 
 <template>
   <div class="ledger-page">
+    <el-dialog v-model="newProductsVisible" title="本批新增商品与编码" width="min(760px, 94vw)">
+      <p>这些商品已自动建档，后续销售会沿用该编码。箱规和进货成本可到商品档案补充。</p>
+      <el-table :data="newProducts" max-height="440" size="small" border>
+        <el-table-column prop="skuCode" label="商品编码" width="150" />
+        <el-table-column prop="productName" label="商品名称" min-width="260" />
+        <el-table-column label="资料" width="150"><template #default>箱规 / 成本待补充</template></el-table-column>
+      </el-table>
+      <template #footer><el-button @click="newProductsVisible = false">关闭</el-button><el-button type="primary" @click="router.push('/products')">查看商品档案</el-button></template>
+    </el-dialog>
     <div class="ledger-crumb">园区小卖 ERP / 日常台账 /
       <router-link v-if="activeChannel" to="/import">导入中心</router-link><span v-else>导入中心</span>
       <span v-if="activeChannel"> / {{ activeChannel.name }}</span>
@@ -555,6 +576,9 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
         <SmartProductImportDialog ref="productWorkspace" embedded @saved="loadBatches" />
       </div>
       <el-card v-else shadow="never" class="channel-workbench mb-12px">
+        <el-alert v-if="activeChannel.key === 'sales'" type="success" :closable="false" class="mb-12px"
+          title="销售新品自动编号已开启"
+          description="确认导入时，首次出现的商品自动分配 YQ 编码。重复销售沿用原码；箱规和进货成本可在商品档案补充。" />
         <div class="workbench-heading">
           <div><h3>{{ activeChannel.type }}录入区</h3><p>{{ activeChannel.outcome }}</p></div>
           <el-button v-if="preview" type="primary" :disabled="!!uploading" @click="previewVisible = true">继续核对并导入</el-button>
@@ -598,6 +622,9 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
         <span>总 {{ lastResult.rowTotal }} 行</span>
         <el-tag type="success" size="small">成功 {{ lastResult.rowOk }}</el-tag>
         <el-tag type="info" size="small">重复跳过 {{ lastResult.rowDup }}</el-tag>
+        <el-button v-if="lastResult.autoCreatedProducts?.length" type="primary" plain size="small" @click="showNewProducts(lastResult.autoCreatedProducts)">
+          新增商品 {{ lastResult.autoCreatedProducts.length }} · 查看编码
+        </el-button>
         <el-tag v-if="lastResult.rowFail" type="danger" size="small">失败 {{ lastResult.rowFail }}</el-tag>
         <el-tag v-if="lastResult.pendingBind" type="warning" size="small">
           待绑定 {{ lastResult.pendingBind }}
@@ -654,6 +681,14 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
           </template>
         </el-table-column>
         <el-table-column prop="periodRange" label="数据区间" width="130" />
+        <el-table-column label="新增商品" width="110">
+          <template #default="{ row }">
+            <el-button v-if="batchNewProducts(row).length" link type="primary" :aria-label="'查看新增商品：' + row.batchNo" @click="showNewProducts(batchNewProducts(row))">
+              {{ batchNewProducts(row).length }} 个 · 编码
+            </el-button>
+            <span v-else>—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="行数(总/成/败/重)" width="150">
           <template #default="{ row }">
             <span class="text-12px">

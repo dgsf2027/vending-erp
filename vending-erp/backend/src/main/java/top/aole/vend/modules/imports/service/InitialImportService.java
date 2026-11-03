@@ -428,7 +428,7 @@ public class InitialImportService {
         return resp;
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public CommitResp step3Confirm(String token, String operator) {
         Pending pending = take(token, "step3");
         ParsedSheet sheet = toChannel1Sheet(FileUtil.readBytes(new File(pending.getTmpPath())));
@@ -439,7 +439,7 @@ public class InitialImportService {
         resp.setBatchNo(batch.getBatchNo());
         resp.setFileType(batch.getFileType());
         resp.setRowTotal(sheet.getRows().size());
-        importService.processSale(batch, sheet, resp); // 复用通道1:去重幂等/别名匹配/锁账口径/成本快照
+        importService.processSale(batch, sheet, resp, operator); // 复用通道1:去重幂等/商品识别建档/锁账口径/成本快照
         finishBatch(batch, resp.getRowOk(), resp.getRowFail(), resp.getRowDup());
         opLogService.record(operator, "期初③历史销售", "import_batch", batch.getId(), null,
                 "成功" + resp.getRowOk() + " 重复" + resp.getRowDup() + " 失败" + resp.getRowFail());

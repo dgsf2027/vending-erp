@@ -283,9 +283,10 @@ class ImportServiceTest {
     }
 
     @Test
-    void sale_unknownAlias_goesPending_thenReprocessRebinds() throws Exception {
+    void sale_ambiguousName_goesPending_thenReprocessRebinds() throws Exception {
         machine("DEV-A2", "4楼售卖机");
-        Product p = product("茶派蜜桃乌龙", null, null);
+        Product p = product("茶派蜜桃乌龙茶500ml", "TEST-A", null);
+        product("茶派蜜桃乌龙茶500ml", "TEST-B", null);
 
         byte[] file = saleFile(new Object[][]{
                 {"DD101", "茶派蜜桃乌龙茶500ml", null, 1, 5, "DEV-A2", 4.0, "正常订单", "微信", "2026-07-02 12:00:00"},

@@ -16,6 +16,33 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ProductCodeServiceTest {
+    @Test void salesSequenceReservesDeliveredCodesSkipsDeletedAndRollsBack() throws Exception {
+        JdbcDataSource ds = new JdbcDataSource();
+        ds.setURL("jdbc:h2:mem:sales_codes;MODE=MySQL;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=10000");
+        JdbcTemplate db = new JdbcTemplate(ds);
+        db.execute("CREATE TABLE yc_vend_code_sequence(sequence_key varchar(32) primary key,next_value bigint not null)");
+        db.update("INSERT INTO yc_vend_code_sequence VALUES('product_sku',19),('sales_product_yq',25)");
+        db.execute("CREATE TABLE yc_vend_product(sku_code varchar(32) unique,is_deleted int default 0)");
+        Configuration config = new Configuration(new Environment("test", new SpringManagedTransactionFactory(), ds));
+        config.addMapper(ProductCodeMapper.class);
+        ProductCodeService service = new ProductCodeService(new SqlSessionTemplate(new SqlSessionFactoryBuilder().build(config)).getMapper(ProductCodeMapper.class));
+        TransactionTemplate tx = new TransactionTemplate(new DataSourceTransactionManager(ds));
+        assertEquals("YQ000026", tx.execute(s -> service.nextSalesCode()));
+        db.update("INSERT INTO yc_vend_product VALUES('YQ000099',1),('yq100',0),('YQcustom',0)");
+        ExecutorService pool = Executors.newFixedThreadPool(4);
+        try {
+            List<Future<String>> futures = new ArrayList<>();
+            for (int i=0;i<12;i++) futures.add(pool.submit(() -> tx.execute(s -> {
+                String code = service.nextSalesCode(); db.update("INSERT INTO yc_vend_product(sku_code) VALUES(?)",code); return code;
+            })));
+            Set<String> result = new HashSet<>();
+            for (Future<String> future : futures) result.add(future.get(20,TimeUnit.SECONDS));
+            assertEquals(12,result.size()); assertTrue(result.contains("YQ000101")); assertTrue(result.contains("YQ000112"));
+            assertThrows(IllegalStateException.class, () -> tx.execute(s -> { service.nextSalesCode(); throw new IllegalStateException("rollback"); }));
+            assertEquals("YQ000113",tx.execute(s -> service.nextSalesCode()));
+            assertEquals(19,db.queryForObject("SELECT next_value FROM yc_vend_code_sequence WHERE sequence_key='product_sku'",Integer.class));
+        } finally { pool.shutdownNow(); }
+    }
     @Test void concurrentTransactionsAllocateUniqueCodesAfterExistingAndDeletedCodes() throws Exception {
         JdbcDataSource ds = new JdbcDataSource();
         ds.setURL("jdbc:h2:mem:codes;MODE=MySQL;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=10000");

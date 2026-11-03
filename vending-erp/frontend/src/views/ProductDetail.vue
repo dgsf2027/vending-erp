@@ -174,7 +174,7 @@ const events = computed(() => {
         <h3>📇 基础信息 · 别名映射</h3>
         <div class="kv">
           <span class="mini">编码 / 分类</span><b class="num">{{ data.skuCode }} · {{ data.category ?? '—' }}</b>
-          <span class="mini">整件规格</span><b>{{ data.boxSpec != null ? n(data.boxSpec) + ' ' + (data.unit || '件') + '/箱' : '—' }}</b>
+          <span class="mini">整件规格</span><b>{{ data.boxSpec != null && Number(data.boxSpec) > 0 ? n(data.boxSpec) + ' ' + (data.unit || '件') + '/箱' : '待补充' }}</b>
           <span class="mini">保质期</span><b>{{ data.shelfLifeDays != null ? data.shelfLifeDays + ' 天' : '—' }}</b>
           <span class="mini">参考售价</span><b>{{ money(data.refPrice) }}</b>
           <span class="mini">别名映射</span>

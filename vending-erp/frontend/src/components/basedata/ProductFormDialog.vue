@@ -119,7 +119,8 @@ async function save() {
         </el-col>
         <el-col :span="8">
           <el-form-item label="箱规">
-            <el-input v-model="form.boxSpec" type="number" min="1" step="1" placeholder="1" style="width: 100%" />
+            <el-input v-model="form.boxSpec" type="number" min="0" step="1" placeholder="每箱数量" style="width: 100%" />
+            <span v-if="Number(form.boxSpec) === 0" style="color: #a56609; font-size: 12px">待补充，每箱数量需大于 0</span>
           </el-form-item>
         </el-col>
         <el-col :span="8">

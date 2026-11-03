@@ -10,6 +10,8 @@ const passed = [], errors = [], filters = [], uploads = [], confirmations = [], 
 const types = ['出货明细', '系统补货记录', '商品列表'];
 const batches = types.map((fileType, i) => ({ id: i + 1, batchNo: 'QA-' + (i + 1), fileType, fileName: fileType + '-历史.xlsx',
   rowTotal: 2, rowOk: 2, rowFail: 0, rowDup: 0, batchStatus: '已导入', createTime: '2026-10-27 12:00:00' }));
+const autoCreatedProducts = [{ productId: 26, skuCode: 'YQ000026', productName: '测试新品柚子茶500ml' }];
+batches[0].columnMapJson = JSON.stringify({ autoProductCodePrefix: 'YQ', autoCreatedProducts });
 const ok = (route, data) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 200, data }) });
 const until = async (fn, message) => {
   const end = Date.now() + 10000;
@@ -40,7 +42,8 @@ const until = async (fn, message) => {
     if (url.pathname.endsWith('/imports/confirm')) {
       const token = req.postDataJSON().token; confirmations.push(token);
       return ok(route, { batchId: 99, batchNo: 'QA-COMMIT', fileType: token, rowTotal: 1, rowOk: 1, rowFail: 0, rowDup: 0,
-        pendingBind: 0, priceChangeCount: 0, negativeStock: [], docsCreated: 1, matchedPrePending: 0, snapshots: 1 });
+        pendingBind: 0, priceChangeCount: 0, negativeStock: [], docsCreated: 1, matchedPrePending: 0, snapshots: 1,
+        autoCreatedProducts: token === '出货明细' ? autoCreatedProducts : [] });
     }
     if (!['GET','HEAD','OPTIONS'].includes(req.method())) { unexpected.push(url.pathname); return route.abort(); }
     if (url.pathname.endsWith('/report/stock')) return ok(route, { dataAsOf: '2026-10-27', records: [] });
@@ -106,6 +109,23 @@ const until = async (fn, message) => {
     await page.getByRole('button', { name: '继续填写', exact: true }).click();
     assert.equal(await page.getByRole('textbox', { name: '商品名称第1行', exact: true }).inputValue(), '保留的测试资料');
     passed.push('replenishment uses its own upload/confirm payload; product page exposes code lookup and protects unsaved rows');
+    await page.goto(base + '/import/sales');
+    await page.getByText('销售新品自动编号已开启', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '查看新增商品：QA-1', exact: true }).click();
+    const codesDialog = page.getByRole('dialog', { name: '本批新增商品与编码', exact: true });
+    await codesDialog.getByText('YQ000026', { exact: true }).waitFor();
+    await codesDialog.getByRole('button', { name: '关闭', exact: true }).click();
+    await page.locator('.channel-upload input[type=file]').setInputFiles({ name: '新品销售.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from('synthetic') });
+    await preview.getByRole('button', { name: '确认导入 → 入账', exact: true }).click();
+    await page.getByRole('button', { name: '新增商品 1 · 查看编码', exact: true }).click();
+    await codesDialog.getByText('测试新品柚子茶500ml', { exact: true }).waitFor();
+    await page.screenshot({ path: path.join(out, 'sales-new-codes.png'), fullPage: true, animations: 'disabled' });
+    await codesDialog.getByRole('button', { name: '关闭', exact: true }).click();
+    await page.reload();
+    await page.getByRole('button', { name: '查看新增商品：QA-1', exact: true }).click();
+    await codesDialog.getByText('YQ000026', { exact: true }).waitFor();
+    await codesDialog.getByRole('button', { name: '关闭', exact: true }).click();
+    passed.push('sales shows new YQ codes after confirm and in persistent batch history after reload');
     await page.goto(base + '/import/replenishment');
     await page.reload();
     await page.getByRole('heading', { name: '通道② · 补货导入', exact: true }).waitFor();

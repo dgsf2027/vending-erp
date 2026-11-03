@@ -111,6 +111,7 @@ public class ImportService {
 
     private final ExcelParser excelParser;
     private final AliasMatcher aliasMatcher;
+    private final SalesProductService salesProducts;
     private final AliasService aliasService;
     private final DocService docService;
     private final StockService stockService;
@@ -161,12 +162,14 @@ public class ImportService {
     public PreviewResp upload(String fileType, String fileName, byte[] content) {
         String[][] spec = specOf(fileType);
         ParsedSheet sheet = excelParser.parse(new ByteArrayInputStream(content));
+        boolean yuanqi = ImportBatch.TYPE_SALE.equals(fileType) && SalesSheetNormalizer.isYuanqi(sheet);
         normalizeReplenishHeaders(fileType, sheet);
 
         PreviewResp resp = new PreviewResp();
         resp.setFileName(fileName);
         resp.setFileType(fileType);
         fillPreview(spec, sheet, resp);
+        if (yuanqi) resp.getWarnings().add("已识别元气销售表。缺少订单类型时，正数量且非负实收按正常销售导入；退款行请补充订单类型。");
 
         // 暂存原始文件,等第②步确认
         String token = IdUtil.fastSimpleUUID();
@@ -183,6 +186,7 @@ public class ImportService {
 
     /** 售卖机后台新导出表头与旧版同义,统一为现有处理管线使用的列名。 */
     private static void normalizeReplenishHeaders(String fileType, ParsedSheet sheet) {
+        if (ImportBatch.TYPE_SALE.equals(fileType)) { SalesSheetNormalizer.normalize(sheet); return; }
         if (!ImportBatch.TYPE_REPLENISH.equals(fileType)) return;
         Map<String, String> aliases = new LinkedHashMap<>();
         aliases.put("本次补货数量", "本次补货数");
@@ -354,7 +358,7 @@ public class ImportService {
     }
 
     /** 把修改后的失败行建一个"修正批次"重新导入(走原通道处理管线) */
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public CommitResp refix(Long batchId, List<Map<String, String>> rows, String operator) {
         ImportBatch orig = batchMapper.selectById(batchId);
         if (orig == null) {
@@ -409,7 +413,7 @@ public class ImportService {
         resp.setRowTotal(rows.size());
         switch (fileType) {
             case ImportBatch.TYPE_SALE:
-                processSale(batch, sheet, resp);
+                processSale(batch, sheet, resp, operator);
                 break;
             case ImportBatch.TYPE_REPLENISH:
                 processReplenish(batch, sheet, resp);
@@ -440,7 +444,7 @@ public class ImportService {
      * 不再留下永远卡在「处理中」的僵尸批次(归档文件为文件系统操作不随事务回滚,
      * 失败后留下的孤儿归档目录无副作用,重新上传即可)。
      */
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public CommitResp confirm(String token, String operator) {
         PendingUpload pending = pendingUploads.remove(token);
         if (pending == null) {
@@ -482,7 +486,7 @@ public class ImportService {
 
         switch (pending.getFileType()) {
             case ImportBatch.TYPE_SALE:
-                processSale(batch, sheet, resp);
+                processSale(batch, sheet, resp, operator);
                 break;
             case ImportBatch.TYPE_REPLENISH:
                 processReplenish(batch, sheet, resp);
@@ -509,8 +513,12 @@ public class ImportService {
     // ============================== 通道1:出货明细 → sale_record ==============================
 
     /** 包私有:期初向导第③步(历史销售)复用同一处理管线(InitialImportService) */
-    void processSale(ImportBatch batch, ParsedSheet sheet, CommitResp resp) {
+    void processSale(ImportBatch batch, ParsedSheet sheet, CommitResp resp, String operator) {
+        // 锁后再读去重键及档案；READ_COMMITTED 避免 MySQL 旧快照漏看并发刚建的商品。
+        salesProducts.lockImport();
         AliasMatcher.Session alias = aliasMatcher.openSession();
+        Map<String, SalesProductService.Resolution> productCache = new HashMap<>();
+        Set<Long> newProductIds = new HashSet<>();
         Map<String, Long> machineByDevice = loadMachines();
         Set<String> existingKeys = new HashSet<>();
         for (Map<String, Object> row : queryMapper.existingSaleKeys()) {
@@ -537,6 +545,9 @@ public class ImportService {
                 String orderTypeRaw = required(row, "订单类型");
                 LocalDateTime bizTime = parseDateTime(required(row, "出货时间"), "出货时间");
                 String barcode = row.get("商品条形码");
+                if (name.trim().isEmpty() || name.length() > 128 || (barcode != null && barcode.length() > 64)) {
+                    throw new RowException(ImportError.TYPE_FORMAT, "商品名称须为 1 至 128 个字符，条码最多 64 个字符");
+                }
 
                 Long machineId = machineByDevice.get(deviceId);
                 if (machineId == null) {
@@ -547,6 +558,9 @@ public class ImportService {
                 }
 
                 String orderType = normalizeOrderType(orderTypeRaw);
+                if (("正常".equals(orderType) || "兑换".equals(orderType)) && (qty.signum() <= 0 || amount.signum() < 0)) {
+                    throw new RowException(ImportError.TYPE_FORMAT, "正常销售数量须大于 0、金额不能为负；退款请填写退款订单类型");
+                }
                 // 一单多行:同订单号第 2+ 行加确定性后缀 #k(按文件内出现次序,重复导入同文件后缀一致 → 幂等)
                 int occ = orderOccurrence.merge(orderNoRaw, 1, Integer::sum);
                 String orderNo = occ == 1 ? orderNoRaw : orderNoRaw + "#" + occ;
@@ -557,9 +571,19 @@ public class ImportService {
                     continue;
                 }
 
-                Long productId = alias.match(barcode, name);
+                String productKey = StrUtil.nullToEmpty(StrUtil.trim(barcode)) + "\u0001"
+                        + top.aole.vend.modules.basedata.application.ProductCatalogMatcher.normalize(name);
+                SalesProductService.Resolution resolution = productCache.get(productKey);
+                if (resolution == null) {
+                    String category = StrUtil.blankToDefault(row.get("商品分类"), row.get("品类"));
+                    if (category != null && category.length() > 32) throw new RowException(ImportError.TYPE_FORMAT, "商品分类最多 32 个字符");
+                    resolution = salesProducts.resolve(name, barcode, category,
+                            "正常".equals(orderType) || "兑换".equals(orderType), operator);
+                    if (resolution.getProduct() != null) productCache.put(productKey, resolution);
+                }
+                Long productId = resolution.getProduct() == null ? null : resolution.getProduct().getId();
                 if (productId == null) {
-                    alias.pendingUpsert(null, barcode, name, batch.getId());
+                    alias.pendingUpsert(SalesProductService.aliasCode(name), barcode, name, batch.getId());
                     pendingBind++;
                 }
 
@@ -571,7 +595,7 @@ public class ImportService {
                 sale.setMachineId(machineId);
                 sale.setDeviceId(deviceId);
                 sale.setSlotNo(row.get("货道号"));
-                sale.setAliasCodeRaw(null);
+                sale.setAliasCodeRaw(SalesProductService.aliasCode(name));
                 sale.setAliasBarcodeRaw(barcode);
                 sale.setAliasNameRaw(name);
                 sale.setProductId(productId);
@@ -589,6 +613,13 @@ public class ImportService {
                 sale.setOfflineFlag(false);
                 sale.setCreateUser(IMPORT_USER);
                 saleRecordMapper.insert(sale);
+                if (resolution.isCreated() && newProductIds.add(productId)) {
+                    Product product = resolution.getProduct();
+                    ImportDtos.AutoCreatedProduct created = new ImportDtos.AutoCreatedProduct();
+                    created.setProductId(product.getId()); created.setSkuCode(product.getSkuCode());
+                    created.setProductName(product.getProductName());
+                    resp.getAutoCreatedProducts().add(created);
+                }
                 existingKeys.add(dedupKey);
                 ok++;
 
@@ -598,8 +629,9 @@ public class ImportService {
                 fail++;
                 recordError(batch.getId(), row, e.errorType, e.getMessage());
             } catch (Exception e) {
-                fail++;
-                recordError(batch.getId(), row, ImportError.TYPE_FORMAT, "未预期错误:" + e.getMessage());
+                // 建档、别名、销售必须一起成功，持久化故障不能吞掉后留下孤立商品。
+                log.error("销售导入失败 batch={} row={}", batch.getId(), row.getRowNo(), e);
+                throw new BizException("销售保存失败，本批次已撤销，请重新上传；行号 " + row.getRowNo());
             }
         }
         if (minPeriod != null) {
@@ -609,6 +641,10 @@ public class ImportService {
         resp.setRowDup(dup);
         resp.setRowFail(fail);
         resp.setPendingBind(pendingBind);
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("autoProductCodePrefix", "YQ");
+        metadata.put("autoCreatedProducts", resp.getAutoCreatedProducts());
+        batch.setColumnMapJson(JSONUtil.toJsonStr(metadata));
     }
 
     // ====================== 通道2:系统补货记录 → 出库上架/退库转移单 ======================
