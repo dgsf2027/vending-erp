@@ -35,6 +35,10 @@ public class ProductCatalogMatcher {
         row.setExistingProductId(null);
         row.setMatchedProductName(null);
         row.setCandidates(new ArrayList<>());
+        if (!trim(row.getRequestedSkuCode()).isEmpty()) {
+            resolveRequestedCode(row);
+            return;
+        }
         String code = trim(row.getSourceCode());
         String barcode = trim(row.getBarcode());
         String erp = trim(row.getSkuCode());
@@ -113,6 +117,64 @@ public class ProductCatalogMatcher {
         row.setSkuCode(null);
         row.setAction(NEW);
         row.setMatchReason("确认入档时自动生成唯一 SKU 编码");
+    }
+
+    /** 明确提供商品编码时，口味相近不阻断新建；编码、名称与已有绑定冲突必须处理。 */
+    private void resolveRequestedCode(Row row) {
+        String requested = trim(row.getRequestedSkuCode());
+        row.setRequestedSkuCode(requested);
+        row.setSkuCode(null);
+        if (requested.length() > 32 || requested.matches(".*[\\s\\p{Cntrl}].*")) {
+            reject(row, "商品编码最多 32 个字符，不能包含空格或控制字符", Collections.emptyList());
+            return;
+        }
+        String name = normalize(row.getProductName()), barcode = trim(row.getBarcode());
+        String source = trim(row.getSourceCode());
+        Product coded = products.stream().filter(p -> requested.equalsIgnoreCase(p.getSkuCode())).findFirst().orElse(null);
+        Set<Long> evidence = new LinkedHashSet<>();
+        Set<Long> names = new LinkedHashSet<>();
+        for (Product p : products) {
+            if (!barcode.isEmpty() && barcode.equals(trim(p.getBarcode()))) evidence.add(p.getId());
+            if (!name.isEmpty() && name.equals(normalize(p.getProductName()))) names.add(p.getId());
+        }
+        for (SkuAlias alias : aliases) {
+            if (!byId.containsKey(alias.getProductId())) continue;
+            if ((!source.isEmpty() && source.equalsIgnoreCase(trim(alias.getAliasCode())))
+                    || (!barcode.isEmpty() && barcode.equals(trim(alias.getAliasBarcode())))) evidence.add(alias.getProductId());
+            if (!name.isEmpty() && name.equals(normalize(alias.getAliasName()))) names.add(alias.getProductId());
+        }
+        if (coded != null) {
+            if (evidence.stream().anyMatch(id -> !id.equals(coded.getId()))
+                    || (row.getSelectedProductId() != null && !coded.getId().equals(row.getSelectedProductId()))) {
+                evidence.add(coded.getId());
+                reject(row, "编码 " + requested + " 与条码、来源编号或所选商品不一致，请核对", candidates(evidence));
+                return;
+            }
+            boolean confirmed = coded.getId().equals(row.getSelectedProductId());
+            if (row.isConfirmNew() || conflictingSize(row.getProductName(), coded.getProductName())
+                    || barcodeConflict(barcode, coded)
+                    || (!confirmed && !names.contains(coded.getId()) && !evidence.contains(coded.getId()))) {
+                reject(row, "编码 " + requested + " 已属于「" + coded.getProductName() + "」，请核对编码或选择沿用已有商品", Collections.singletonList(coded));
+                return;
+            }
+            // 来源编号本身不能证明不同名称是同一商品，需名称、条码或人工确认。
+            boolean sameBarcode = !barcode.isEmpty() && (barcode.equals(trim(coded.getBarcode()))
+                    || aliases.stream().anyMatch(a -> coded.getId().equals(a.getProductId()) && barcode.equals(trim(a.getAliasBarcode()))));
+            if (!confirmed && !names.contains(coded.getId()) && !sameBarcode) {
+                reject(row, "编码 " + requested + " 已属于「" + coded.getProductName() + "」，与本行名称不同，请核对", Collections.singletonList(coded));
+                return;
+            }
+            accept(row, coded, "编码与已有商品一致，沿用原档案");
+            return;
+        }
+        evidence.addAll(names);
+        if (row.getSelectedProductId() != null) evidence.add(row.getSelectedProductId());
+        if (!evidence.isEmpty()) {
+            reject(row, "该商品已有其他编码，请选择沿用已有商品；系统不会自动改动原编码", candidates(evidence));
+            return;
+        }
+        row.setAction(NEW);
+        row.setMatchReason("使用表格编码 " + requested);
     }
 
     private boolean barcodeConflict(String barcode, Product product) {

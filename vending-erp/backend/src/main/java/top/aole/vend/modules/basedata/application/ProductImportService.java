@@ -170,7 +170,11 @@ public class ProductImportService {
 
             if (smart) {
                 row.setSourceCode(row.getSkuCode());
-                row.setSkuCode(cell(raw, colMap, "ERP编码"));
+                String codeHeader = colMap.getOrDefault("商品编号", "");
+                boolean externalCode = codeHeader.contains("后台") || codeHeader.contains("平台");
+                row.setRequestedSkuCode(StrUtil.blankToDefault(cell(raw, colMap, "ERP编码"),
+                        externalCode ? null : row.getSkuCode()));
+                row.setSkuCode(null);
                 row.setSourceName(row.getProductName());
                 row.setSourceSpec(cell(raw, colMap, "规格"));
                 if (StrUtil.isNotBlank(row.getSourceSpec()) && StrUtil.isNotBlank(row.getProductName())

@@ -44,20 +44,21 @@ public class SmartProductImportController {
     public ResponseEntity<byte[]> template() throws IOException {
         try (Workbook workbook = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             Sheet sheet = workbook.createSheet("商品列表");
-            String[] columns = {"后台商品编号", "商品名称", "商品条形码", "规格", "基本单位", "箱规", "参考成本", "参考售价", "商品分类", "ERP编码", "备注"};
+            String[] columns = {"商品编码", "商品名称", "基本单位", "箱规"};
             Row header = sheet.createRow(0);
             CellStyle text = workbook.createCellStyle(); text.setDataFormat(workbook.createDataFormat().getFormat("@"));
             for (int i = 0; i < columns.length; i++) {
                 header.createCell(i).setCellValue(columns[i]); sheet.setColumnWidth(i, (i == 1 ? 36 : 20) * 256);
             }
-            sheet.setDefaultColumnStyle(0, text); sheet.setDefaultColumnStyle(2, text); sheet.setDefaultColumnStyle(9, text);
+            sheet.setDefaultColumnStyle(0, text);
             sheet.createFreezePane(2, 1);
             Sheet help = workbook.createSheet("填写说明");
-            String[] notes = {"新商品的 ERP 编码留空，确认入档时自动分配。已有商品沿用原编码。",
-                    "后台编号和瓶身条码请按原样填写；保留前导零，不要替换成 ERP 编码。",
-                    "商品名建议包含品牌、口味和容量，也可把容量填到规格列。",
+            String[] notes = {"已有自己的商品编码就直接填写，系统原样使用；没有编码可以留空，确认入档时自动分配。",
+                    "编码请按文本填写，保留前导零。已有档案的编码不会自动改动；编码与名称冲突时请先核对。",
+                    "商品名建议包含品牌、口味和容量。不同商品请使用不同的编码。",
                     "新商品须确认基本单位和每箱数量；按单件采购的商品每箱数量填 1。",
-                    "已有商品默认只建立对应关系；需要更新价格等资料时，在预览里勾选更新。"};
+                    "条码、分类、价格等可在页面的「更多资料」中填写。已有商品默认只建立对应关系。",
+                    "也兼容原后台导出表；明确标为「后台商品编号」「平台商品编号」的列作为来源编号保存。"};
             for (int i = 0; i < notes.length; i++) help.createRow(i).createCell(0).setCellValue(notes[i]);
             help.setColumnWidth(0, 110 * 256); workbook.write(out);
             return ResponseEntity.ok().contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))

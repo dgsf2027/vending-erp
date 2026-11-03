@@ -50,8 +50,8 @@ class SmartProductImportServiceTest {
             p.setBarcode(r.getString("barcode")); p.setUnit(r.getString("unit")); p.setBoxSpec(r.getBigDecimal("pack")); p.setProductStatus(r.getString("status")); return p;
         }));
         when(products.create(any(), anyString())).thenAnswer(i -> {
-            Product p = i.getArgument(0); assertNull(p.getSkuCode());
-            p.setSkuCode(codes.nextCode());
+            Product p = i.getArgument(0);
+            if (p.getSkuCode() == null) p.setSkuCode(codes.nextCode());
             db.update("INSERT INTO product(code,name,barcode,unit,pack,status) VALUES(?,?,?,?,?,?)",
                 p.getSkuCode(),p.getProductName(),p.getBarcode(),p.getUnit(),p.getBoxSpec(),p.getProductStatus());
             p.setId(db.queryForObject("SELECT id FROM product WHERE code=?",Long.class,p.getSkuCode())); return p;
@@ -165,5 +165,85 @@ class SmartProductImportServiceTest {
         }
         assertEquals(1,service.commitManual(Collections.singletonList(row),"测试").getMatched());
         assertEquals(1,db.queryForObject("SELECT count(*) FROM product",Integer.class));
+    }
+
+    byte[] codedExcel(String[][] data) throws Exception {
+        try (org.apache.poi.hssf.usermodel.HSSFWorkbook wb = new org.apache.poi.hssf.usermodel.HSSFWorkbook();
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            org.apache.poi.ss.usermodel.Sheet sheet = wb.createSheet("商品建档");
+            String[] headers = {"商品编号", "商品名称", "基本单位", "箱规", "条码"};
+            org.apache.poi.ss.usermodel.Row head = sheet.createRow(0);
+            for (int c = 0; c < headers.length; c++) head.createCell(c).setCellValue(headers[c]);
+            for (int r = 0; r < data.length; r++) {
+                org.apache.poi.ss.usermodel.Row row = sheet.createRow(r + 1);
+                for (int c = 0; c < data[r].length; c++) row.createCell(c).setCellValue(data[r][c]);
+            }
+            wb.write(out); return out.toByteArray();
+        }
+    }
+
+    @Test void suppliedCodesSurviveXlsReviewCommitAndRepeatWithSimilarFlavours() throws Exception {
+        byte[] content = codedExcel(new String[][] {
+            {"SP000003", "测试电解质水", "件", "15"},
+            {"SP000016", "测试电解质水(荔枝)", "件", "15"},
+            {"SP000022", "测试电解质水(专业版)", "件", "15"},
+            {"000025", "测试电解质水椰子", "件", "15"}
+        });
+        ProductImportDtos.ParseResp parsed = service.parse("编码.xls", content);
+        assertEquals(4, parsed.getCreateCount());
+        assertEquals("000025", parsed.getRows().get(3).getRequestedSkuCode());
+        assertEquals(0, service.review(parsed.getRows()).getErrorCount());
+        ProductImportDtos.CommitResp result = service.commit(parsed.getToken(), parsed.getRows(), "测试");
+        assertEquals(4, result.getCreated()); assertEquals(0, result.getFailed());
+        assertEquals("SP000016", result.getSavedRows().get(1).getSkuCode());
+        assertEquals("000025", result.getSavedRows().get(3).getSkuCode());
+        ProductImportDtos.ParseResp repeat = service.parse("编码.xls", content);
+        assertEquals(4, repeat.getUpdateCount());
+        assertEquals(4, service.commit(repeat.getToken(), repeat.getRows(), "测试").getMatched());
+        assertEquals(4, db.queryForObject("SELECT count(*) FROM product", Integer.class));
+    }
+
+    @Test void occupiedCodeOrExistingNameWithDifferentCodeNeverChangesTheCatalog() throws Exception {
+        ProductImportDtos.ParseResp initial = service.parse("旧商品.xls", codedExcel(new String[][]{{"SP000016", "测试山泉550ml", "件", "24"}}));
+        assertEquals(1, service.commit(initial.getToken(), initial.getRows(), "测试").getCreated());
+        ProductImportDtos.ParseResp conflict = service.parse("编码.xls", codedExcel(new String[][] {
+            {"SP000016", "测试电解质水荔枝", "件", "15"},
+            {"SP000018", "测试山泉550ml", "件", "24"}
+        }));
+        assertEquals(2, conflict.getErrorCount());
+        assertTrue(conflict.getRows().get(0).getErrorMsg().contains("测试山泉550ml"));
+        assertEquals(2, service.commit(conflict.getToken(), conflict.getRows(), "测试").getFailed());
+        assertEquals("测试山泉550ml", db.queryForObject("SELECT name FROM product WHERE code='SP000016'", String.class));
+        assertEquals(1, db.queryForObject("SELECT count(*) FROM product", Integer.class));
+        verify(products, never()).update(anyLong(), any(), anyString());
+    }
+
+    @Test void duplicateSuppliedCodesCannotBeHiddenByDifferentBarcodes() throws Exception {
+        ProductImportDtos.ParseResp parsed = service.parse("重复.xls", codedExcel(new String[][] {
+            {"USER01", "苹果汽水", "瓶", "12", "001"}, {"user01", "葡萄汽水", "瓶", "12", "002"}
+        }));
+        assertEquals(1, parsed.getErrorCount());
+        assertTrue(parsed.getRows().get(1).getErrorMsg().contains("编码重复"));
+        ProductImportDtos.CommitResp result = service.commit(parsed.getToken(), parsed.getRows(), "测试");
+        assertEquals(1, result.getCreated()); assertEquals(1, result.getFailed());
+    }
+
+    @Test void concurrentSuppliedCodeIsCreatedOnceAndBlankCodeStillAutoNumbers() throws Exception {
+        byte[] content = codedExcel(new String[][]{{"SP000025", "蜜桃汽水", "瓶", "12"}});
+        ProductImportDtos.ParseResp a = service.parse("a.xls", content), b = service.parse("b.xls", content);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<ProductImportDtos.CommitResp> x = pool.submit(() -> service.commit(a.getToken(), a.getRows(), "A"));
+            Future<ProductImportDtos.CommitResp> y = pool.submit(() -> service.commit(b.getToken(), b.getRows(), "B"));
+            ProductImportDtos.CommitResp rx = x.get(15, TimeUnit.SECONDS), ry = y.get(15, TimeUnit.SECONDS);
+            assertEquals(1, rx.getCreated() + ry.getCreated()); assertEquals(1, rx.getMatched() + ry.getMatched());
+            assertEquals(0, rx.getFailed() + ry.getFailed());
+        } finally { pool.shutdownNow(); }
+        ProductImportDtos.Row manual = ProductCatalogMatcherTest.row("面包", null);
+        manual.setUnit("袋"); manual.setBoxSpec("1");
+        assertEquals("SP000026", service.commitManual(Collections.singletonList(manual), "测试").getSavedRows().get(0).getSkuCode());
+        manual = ProductCatalogMatcherTest.row("花生米", null);
+        manual.setUnit("袋"); manual.setBoxSpec("1"); manual.setRequestedSkuCode("000078");
+        assertEquals("000078", service.commitManual(Collections.singletonList(manual), "测试").getSavedRows().get(0).getSkuCode());
     }
 }

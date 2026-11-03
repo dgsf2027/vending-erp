@@ -78,7 +78,7 @@ const channels: Channel[] = [
     type: '商品列表',
     icon: '🏷️',
     title: '通道③ · 商品导入',
-    desc: '上传商品表或直接填写，新商品自动编号，已有商品沿用原码。',
+    desc: '上传商品表或直接填写，有编码直接使用，留空自动编号。',
     purpose: '可下载模板、上传商品列表，也可直接手工添加商品。',
     outcome: '核对匹配结果、单位和箱规，确认后保存商品档案与编号。',
     columns: [], tags: ['商品档案', '自动编号', '手工录入'],
@@ -545,7 +545,7 @@ const statusChip = (s: string) => (s === '已导入' ? 'success' : s === '已回
     </div>
 
     <template v-if="activeChannel">
-      <ol class="channel-flow" aria-label="导入步骤">
+      <ol v-if="activeChannel.key !== 'products'" class="channel-flow" aria-label="导入步骤">
         <li><span>1</span><div><b>{{ activeChannel.key === 'products' ? '准备商品资料' : '选择对应表格' }}</b><p>{{ activeChannel.purpose }}</p></div></li>
         <li><span>2</span><div><b>预览核对</b><p>{{ activeChannel.key === 'products' ? '检查商品匹配、基本单位和每箱数量。' : '核对表头和明细，有问题先调整再继续。' }}</p></div></li>
         <li><span>3</span><div><b>{{ activeChannel.key === 'products' ? '确认入档' : '确认导入' }}</b><p>提交后查看本通道的处理结果和历史记录。</p></div></li>

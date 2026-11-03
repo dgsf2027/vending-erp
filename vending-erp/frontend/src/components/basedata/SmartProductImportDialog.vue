@@ -26,6 +26,8 @@ const table = ref<TableInstance>()
 const workspace = ref<HTMLElement>()
 const actionError = ref('')
 const manualEntry = ref(true)
+const showBatch = ref(false)
+const detailRow = ref<ProductImportRow | null>(null)
 let generation = 0
 let loadedFile: File | null = null
 const chosen = computed(() => rows.value.filter(r => selected.value.has(r.rowNo!)))
@@ -63,6 +65,7 @@ async function upload(file: File) {
     const response = await parseSmartProductImport(file)
     if (version !== generation || !(props.visible || props.embedded)) return
     rows.value = response.rows; token.value = response.token || ''; fileName.value = file.name
+    detailRow.value = null
     selected.value = new Set(rows.value.map(r => r.rowNo!)); dirty.value = new Set()
     result.value = null; saved.value = []; page.value = 1; manualEntry.value = false; loadedFile = file
   } catch (error) {
@@ -116,7 +119,17 @@ function edit(row: ProductImportRow, identity = false) {
   }
 }
 function pick(row: ProductImportRow, id: number | null) {
+  // 用户明确选择沿用已有档案时，放弃本行指定编码，避免把旧编号绑定给错误商品。
+  if (id && row.requestedSkuCode) {
+    if (row.sourceCode === row.requestedSkuCode) row.sourceCode = ''
+    row.requestedSkuCode = ''
+  }
   edit(row, true); row.selectedProductId = id
+}
+function changeCode(row: ProductImportRow, value: string) {
+  if (row.sourceCode === row.requestedSkuCode) row.sourceCode = value
+  row.requestedSkuCode = value
+  edit(row, true)
 }
 function newProduct(row: ProductImportRow) {
   edit(row, true); row.confirmNew = true
@@ -141,8 +154,8 @@ function fillBlanks() {
   }
   ElMessage.success('已补齐 ' + count + ' 行的空白单位/箱规，请重新检查')
 }
-async function recheck() {
-  if (!chosen.value.length) return
+async function recheck(quiet = false) {
+  if (!chosen.value.length || busy.value) return false
   busy.value = true
   actionError.value = ''
   try {
@@ -151,9 +164,17 @@ async function recheck() {
     rows.value = rows.value.map(r => byRow.get(r.rowNo) || r)
     for (const r of response.rows) dirty.value.delete(r.rowNo!)
     if (response.errorCount) ElMessage.warning('还有 ' + response.errorCount + ' 行需要核对')
-    else ElMessage.success('检查完成，可以确认入档')
+    else if (!quiet) ElMessage.success('检查完成，可以确认入档')
+    return response.errorCount === 0
   } catch (error) { actionError.value = '检查未完成，已保留填写内容：' + errorText(error) }
   finally { busy.value = false }
+  return false
+}
+async function checkAndSave() {
+  if (busy.value || !chosen.value.length) return
+  // 任何改动都重新请求校验；只有本次校验成功才能进入保存，网络错误不能复用旧结果。
+  if (!canSave.value && !await recheck(true)) { onlyReview.value = true; return }
+  await save()
 }
 async function save() {
   if (!canSave.value || busy.value) return
@@ -163,6 +184,7 @@ async function save() {
     const submitted = new Set(chosen.value.map(r => r.rowNo))
     const response = await commitSmartProductImport(token.value, chosen.value, manualEntry.value)
     result.value = response
+    detailRow.value = null
     saved.value.push(...(response.savedRows || []))
     const failed = new Map((response.failedRows || []).map(r => [r.rowNo, r]))
     rows.value = rows.value.flatMap(r => failed.has(r.rowNo) ? [failed.get(r.rowNo)!] : submitted.has(r.rowNo) ? [] : [r])
@@ -196,18 +218,19 @@ function downloadCodes() {
     :close-on-click-modal="false" :close-on-press-escape="!busy" :show-close="!busy" :before-close="close"
     class="smart-product-import" :class="{ 'embedded-workspace': embedded }" @closed="busy = false">
     <div ref="workspace" v-loading="busy" element-loading-text="正在检查和处理商品…">
-      <div v-if="embedded" class="workspace-heading"><h3>商品导入工作台</h3><span class="muted">直接填写或上传表格，确认后自动编号</span></div>
-      <div class="intro">① 上传表格 / 手工添加 → ② 核对商品与包装 → ③ 检查并确认入档。新商品自动编号，已有商品沿用原编码。</div>
+      <div v-if="embedded" class="workspace-heading"><h3>商品导入工作台</h3><span class="muted">上传后直接核对下面四项资料</span></div>
+      <div class="intro">有商品编码就直接使用，留空才自动编号。核对名称、单位和每箱数量后，即可确认导入。</div>
       <el-alert v-if="actionError" class="action-error" type="error" :closable="false" :title="actionError" show-icon />
       <div class="toolbar">
         <el-button type="primary" :disabled="busy" @click="input?.click()">{{ fileName ? '重新选择表格' : '选择商品表格' }}</el-button>
         <input ref="input" type="file" accept=".xls,.xlsx" hidden @change="fileChanged">
         <el-button :disabled="busy" @click="template">下载模板</el-button>
         <el-button :disabled="busy" @click="addRow">＋ 手工添加商品</el-button>
-        <span class="muted">{{ fileName || '没有表格也可直接填写；后台编号、条码可留空' }}</span>
+        <el-button link @click="showBatch = !showBatch">{{ showBatch ? '收起批量设置' : '批量设置单位 / 箱规' }}</el-button>
+        <span class="muted">{{ fileName || '支持 .xls / .xlsx，也可手工添加' }}</span>
       </div>
       <div class="entry-grid">
-        <div class="batch-fill">
+        <div v-if="showBatch" class="batch-fill">
           <b>批量补齐空白包装</b>
           <el-input v-model="bulkUnit" placeholder="基本单位，如瓶" aria-label="批量基本单位" style="width: 145px" />
           <el-input v-model="bulkPack" placeholder="每箱数量，如24" aria-label="批量每箱数量" style="width: 155px" />
@@ -223,67 +246,54 @@ function downloadCodes() {
           <el-button link @click="selected = new Set(rows.map(r => r.rowNo!))">全选</el-button>
           <el-button link @click="selected = new Set()">全不选</el-button>
         </div>
-        <el-table ref="table" :data="visibleRows" row-key="rowNo" max-height="48vh" size="small" border>
+        <el-table ref="table" :data="visibleRows" row-key="rowNo" max-height="58vh" size="small" border>
           <template #empty>
             <div class="empty-workspace">
               <b>{{ rows.length ? '当前筛选下没有待检查商品' : saved.length ? '本次商品已保存，可继续添加' : '商品录入区已准备好' }}</b>
-              <p>可以上传 Excel 批量识别，也可以直接添加商品；编码在确认入档时自动生成。</p>
+              <p>表格只需商品编码、商品名称、基本单位、箱规四列。没有编码可留空。</p>
               <el-button type="primary" plain :disabled="busy" @click="addRow">添加第一行商品</el-button>
             </div>
           </template>
           <el-table-column label="计入" width="55" fixed>
             <template #default="{ row }"><el-checkbox :model-value="selected.has(row.rowNo)" :aria-label="'计入第' + row.rowNo + '行'" @change="toggle(row, $event)" /></template>
           </el-table-column>
-          <el-table-column label="商品 / 匹配结果" min-width="330">
+          <el-table-column label="商品编码" width="150">
             <template #default="{ row }">
-              <div class="row-status"><span>第 {{ row.rowNo }} 行</span><el-tag size="small" :type="ready(row) ? 'success' : 'warning'">{{ dirty.has(row.rowNo) ? '修改后待检查' : row.action }}</el-tag></div>
+              <el-input :model-value="row.requestedSkuCode || row.skuCode || ''" placeholder="留空自动编号"
+                :aria-label="'商品编码第' + row.rowNo + '行'" @input="changeCode(row, $event)" />
+            </template>
+          </el-table-column>
+          <el-table-column label="商品名称" min-width="245">
+            <template #default="{ row }">
               <el-input v-model="row.productName" placeholder="商品名（含口味、容量）" :aria-label="'商品名称第' + row.rowNo + '行'" @input="edit(row, true)" />
-              <div class="match-hint" :class="{ warning: !ready(row) }">{{ row.errorMsg || row.matchReason }}</div>
-              <ProductSelect :model-value="row.selectedProductId || row.existingProductId" :initial-product="initialProduct(row)" lazy
-                placeholder="选择已有商品（输入名称、条码或编码）" @update:model-value="pick(row, $event)" />
-              <div class="candidates">
-                <el-button v-for="candidate in row.candidates" :key="candidate.id" size="small" @click="pick(row, candidate.id!)">
-                  {{ candidate.skuCode }} · {{ candidate.productName }}
-                </el-button>
-              </div>
-              <el-button link type="primary" @click="newProduct(row)">{{ row.confirmNew ? '已选择按新商品检查' : '确认为不同的新商品' }}</el-button>
+              <div v-if="row.errorMsg && !dirty.has(row.rowNo)" class="match-hint warning">{{ row.errorMsg }}</div>
             </template>
           </el-table-column>
-          <el-table-column label="ERP 编码 / 原始标识" min-width="205">
+          <el-table-column label="单位" width="90">
             <template #default="{ row }">
-              <div class="code">{{ row.skuCode || '确认入档时自动编号' }}</div>
-              <div class="muted">后台编号</div>
-              <el-input v-model="row.sourceCode" placeholder="原后台编号，可空" :aria-label="'后台编号第' + row.rowNo + '行'" @input="edit(row, true)" />
-              <div class="muted">瓶身 / 包装条码</div>
-              <el-input v-model="row.barcode" placeholder="保留前导零，可空" :aria-label="'条码第' + row.rowNo + '行'" @input="edit(row, true)" />
-              <div v-if="row.sourceSpec" class="muted">原规格：{{ row.sourceSpec }}</div>
+              <el-input v-model="row.unit" placeholder="如：瓶" :aria-label="'基本单位第' + row.rowNo + '行'" @input="edit(row)" />
             </template>
           </el-table-column>
-          <el-table-column label="包装（新商品必填）" min-width="155">
+          <el-table-column label="每箱数量" width="105">
             <template #default="{ row }">
-              <div class="muted">基本单位</div>
-              <el-input v-model="row.unit" placeholder="瓶 / 袋 / 盒" :aria-label="'基本单位第' + row.rowNo + '行'" @input="edit(row)" />
-              <div class="muted">每箱数量</div>
-              <el-input v-model="row.boxSpec" placeholder="单件包装填1" :aria-label="'每箱数量第' + row.rowNo + '行'" @input="edit(row)" />
+              <el-input v-model="row.boxSpec" placeholder="单件填1" :aria-label="'每箱数量第' + row.rowNo + '行'" @input="edit(row)" />
             </template>
           </el-table-column>
-          <el-table-column label="资料与价格" min-width="190">
+          <el-table-column label="处理结果" width="125">
             <template #default="{ row }">
-              <el-input v-model="row.category" placeholder="商品分类（可空）" aria-label="商品分类" @input="edit(row)" />
-              <div class="price-fields">
-                <el-input v-model="row.refCost" placeholder="成本 / 件" aria-label="参考成本" @input="edit(row)" />
-                <el-input v-model="row.refPrice" placeholder="售价 / 件" aria-label="参考售价" @input="edit(row)" />
-              </div>
-              <el-checkbox v-if="row.existingProductId || row.selectedProductId" v-model="row.updateExisting" @change="edit(row)">更新已有商品资料</el-checkbox>
-              <div class="muted">{{ row.updateExisting ? '将更新本行填有内容的资料和价格' : '已有商品默认只建立对应关系' }}</div>
+              <el-tag size="small" :type="ready(row) ? 'success' : 'warning'">{{ dirty.has(row.rowNo) ? '待检查' : row.action === '已匹配' ? '沿用已有商品' : row.action === '新增商品' ? '可新增' : '需处理' }}</el-tag>
+              <el-button v-if="!ready(row) && row.candidates?.length" class="resolve-link" link type="primary" :aria-label="'处理第' + row.rowNo + '行'" @click="detailRow = row">核对匹配</el-button>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="66" fixed="right">
-            <template #default="{ row }"><el-button link type="danger" :aria-label="'移除第' + row.rowNo + '行'" @click="removeRow(row)">移除</el-button></template>
+          <el-table-column label="操作" width="130" fixed="right">
+            <template #default="{ row }">
+              <el-button link type="primary" :aria-label="'更多资料第' + row.rowNo + '行'" @click="detailRow = row">更多资料</el-button>
+              <el-button link type="danger" :aria-label="'移除第' + row.rowNo + '行'" @click="removeRow(row)">移除</el-button>
+            </template>
           </el-table-column>
         </el-table>
         <div class="toolbar pagination">
-          <span class="muted">改动后点击“重新检查”。取消勾选可暂不导入该行。</span>
+          <span class="muted">取消勾选可暂不导入该行。价格、条码在“更多资料”中填写。</span>
           <el-pagination v-model:current-page="page" :total="filtered.length" :page-size="30" layout="prev, pager, next, total" />
         </div>
       </div>
@@ -302,17 +312,43 @@ function downloadCodes() {
       </div>
     </div>
     <div v-if="embedded" class="workspace-actions">
-      <span class="footer-note">{{ canSave ? '勾选行已检查，可以入档' : rows.length ? '请补齐资料、确认商品后重新检查' : '先添加商品或选择商品表格' }}</span>
-      <el-button :disabled="busy || !chosen.length" @click="recheck">重新检查</el-button>
-      <el-button type="primary" :disabled="!canSave || busy" :loading="busy" @click="save">确认入档（{{ chosen.length }} 行）</el-button>
+      <span class="footer-note">{{ canSave ? '勾选行已准备好' : rows.length ? '填写完成后点击右侧按钮，系统会先检查' : '先添加商品或选择商品表格' }}</span>
+      <el-button :disabled="busy || !chosen.length" @click="recheck()">重新检查</el-button>
+      <el-button type="primary" :disabled="!chosen.length || busy" :loading="busy" @click="checkAndSave">{{ canSave ? '确认入档' : '检查并导入' }}（{{ chosen.length }} 行）</el-button>
     </div>
     <template v-if="!embedded" #footer>
       <span v-if="rows.length" class="footer-note">{{ canSave ? '已检查的勾选行可以入档' : '请补齐资料、确认对应商品后重新检查' }}</span>
       <el-button :disabled="busy" @click="close">{{ saved.length ? '完成' : '关闭' }}</el-button>
-      <el-button :disabled="busy || !chosen.length" @click="recheck">重新检查</el-button>
-      <el-button type="primary" :disabled="!canSave || busy" :loading="busy" @click="save">确认入档（{{ chosen.length }} 行）</el-button>
+      <el-button :disabled="busy || !chosen.length" @click="recheck()">重新检查</el-button>
+      <el-button type="primary" :disabled="!chosen.length || busy" :loading="busy" @click="checkAndSave">{{ canSave ? '确认入档' : '检查并导入' }}（{{ chosen.length }} 行）</el-button>
     </template>
   </component>
+  <el-dialog :model-value="!!detailRow" title="更多资料 / 商品匹配" width="620px" append-to-body :close-on-click-modal="false" @close="detailRow = null">
+    <div v-if="detailRow" class="product-details">
+      <b>{{ detailRow.productName || '未填写商品名称' }}</b>
+      <p class="muted">{{ detailRow.errorMsg || detailRow.matchReason || '以下资料选填' }}</p>
+      <el-form label-position="top">
+        <el-form-item label="对应已有商品（选中后沿用它的编码）">
+          <ProductSelect :model-value="detailRow.selectedProductId || detailRow.existingProductId" :initial-product="initialProduct(detailRow)" lazy
+            placeholder="输入名称、条码或编码查找" @update:model-value="pick(detailRow!, $event)" />
+          <div class="candidates">
+            <el-button v-for="candidate in detailRow.candidates" :key="candidate.id" size="small" @click="pick(detailRow!, candidate.id!)">{{ candidate.skuCode }} · {{ candidate.productName }}</el-button>
+          </div>
+          <el-button v-if="!detailRow.requestedSkuCode" link type="primary" @click="newProduct(detailRow)">{{ detailRow.confirmNew ? '已选择按新商品检查' : '确认为不同的新商品' }}</el-button>
+        </el-form-item>
+        <div class="detail-grid">
+          <el-form-item label="条码"><el-input v-model="detailRow.barcode" placeholder="保留前导零，可空" :aria-label="'条码第' + detailRow.rowNo + '行'" @input="edit(detailRow!, true)" /></el-form-item>
+          <el-form-item label="来源后台编号"><el-input v-model="detailRow.sourceCode" placeholder="原后台编号，可空" :aria-label="'后台编号第' + detailRow.rowNo + '行'" @input="edit(detailRow!, true)" /></el-form-item>
+          <el-form-item label="商品分类"><el-input v-model="detailRow.category" aria-label="商品分类" @input="edit(detailRow!)" /></el-form-item>
+          <el-form-item label="参考成本 / 基本单位"><el-input v-model="detailRow.refCost" aria-label="参考成本" @input="edit(detailRow!)" /></el-form-item>
+          <el-form-item label="参考售价 / 基本单位"><el-input v-model="detailRow.refPrice" aria-label="参考售价" @input="edit(detailRow!)" /></el-form-item>
+        </div>
+        <el-checkbox v-if="detailRow.existingProductId || detailRow.selectedProductId" v-model="detailRow.updateExisting" @change="edit(detailRow!)">更新已有商品资料</el-checkbox>
+        <div class="muted">已有商品默认只建立对应关系；勾选后才更新本行填写的资料与价格。</div>
+      </el-form>
+    </div>
+    <template #footer><el-button type="primary" @click="detailRow = null">完成，返回列表</el-button></template>
+  </el-dialog>
 </template>
 
 <style scoped>
@@ -336,4 +372,9 @@ function downloadCodes() {
 .empty-workspace { padding: 22px 14px; line-height: 1.8; color: #65776b; }
 .empty-workspace p { margin: 7px 0 12px; font-size: 13px; }
 .action-error { margin-top: 12px; }
+.resolve-link { display: block; margin: 5px 0 0; }
+.detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+.product-details .el-form-item { margin-bottom: 16px; }
+:deep(.el-table .cell) { padding-top: 7px; padding-bottom: 7px; }
+@media (max-width: 640px) { .detail-grid { grid-template-columns: 1fr; } .embedded-workspace { padding: 10px; } }
 </style>

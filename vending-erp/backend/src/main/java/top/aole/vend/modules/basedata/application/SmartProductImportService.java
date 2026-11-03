@@ -81,8 +81,10 @@ public class SmartProductImportService {
         ProductImportDtos.ParseResp result = new ProductImportDtos.ParseResp();
         ProductCatalogMatcher matcher = catalog();
         Set<String> seen = new HashSet<>();
+        Set<String> seenCodes = new HashSet<>();
         for (Row row : rows) {
             reviewRow(row, matcher);
+            if (duplicateCode(row, seenCodes)) markError(row, "本文件中商品编码重复，请保留一行或更正编码");
             String key = identityKey(row);
             if (!key.isEmpty() && !seen.add(key)) markError(row, "本文件中有重复商品，请保留一行；已导入后可再绑定其他后台编号");
             result.getRows().add(row);
@@ -96,6 +98,7 @@ public class SmartProductImportService {
 
     private void reviewRow(Row row, ProductCatalogMatcher matcher) {
         row.setSourceCode(StrUtil.trim(row.getSourceCode()));
+        row.setRequestedSkuCode(StrUtil.trim(row.getRequestedSkuCode()));
         row.setBarcode(StrUtil.trim(row.getBarcode()));
         row.setProductName(StrUtil.trim(row.getProductName()));
         matcher.resolve(row);
@@ -125,7 +128,7 @@ public class SmartProductImportService {
                 Row row = rows.get(i);
                 String[] cells = {String.valueOf(row.getRowNo()), row.getSourceCode(), row.getProductName(), row.getBarcode(),
                     row.getUnit(), row.getBoxSpec(), row.getRefCost(), row.getRefPrice(), row.getCategory(),
-                    row.getSkuCode(), row.getProductStatus(), row.getRemark()};
+                    StrUtil.blankToDefault(row.getRequestedSkuCode(), row.getSkuCode()), row.getProductStatus(), row.getRemark()};
                 org.apache.poi.ss.usermodel.Row target = sheet.createRow(i + 1);
                 for (int c = 0; c < cells.length; c++) target.createCell(c).setCellValue(StrUtil.nullToEmpty(cells[c]));
             }
@@ -158,11 +161,13 @@ public class SmartProductImportService {
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
         transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         Set<String> seen = new HashSet<>();
+        Set<String> seenCodes = new HashSet<>();
         for (Row row : rows) {
             String key = identityKey(row);
             String beforeCode = row.getSkuCode();
             Long beforeId = row.getExistingProductId();
             try {
+                if (duplicateCode(row, seenCodes)) throw new BizException("本次提交包含重复商品编码，请保留一行或更正编码");
                 if (!key.isEmpty() && !seen.add(key)) throw new BizException("本次提交包含重复商品，请保留一行");
                 int[] outcome = transaction.execute(status -> saveRow(row, operator));
                 if (outcome[0] == 1) result.setCreated(result.getCreated() + 1);
@@ -202,7 +207,7 @@ public class SmartProductImportService {
         int action;
         if (ProductCatalogMatcher.NEW.equals(row.getAction())) {
             Product draft = fields.newProductOf(row);
-            draft.setSkuCode(null);
+            draft.setSkuCode(StrUtil.blankToDefault(row.getRequestedSkuCode(), null));
             product = productService.create(draft, operator);
             fields.applyStatus(row, product.getId(), product.getProductStatus(), operator);
             action = 1;
@@ -263,6 +268,11 @@ public class SmartProductImportService {
         if (StrUtil.isNotBlank(row.getBarcode())) return "B/" + row.getBarcode().trim();
         if (StrUtil.isNotBlank(row.getSourceCode())) return "C/" + row.getSourceCode().trim();
         return "N/" + ProductCatalogMatcher.normalize(row.getProductName());
+    }
+
+    private static boolean duplicateCode(Row row, Set<String> seen) {
+        return StrUtil.isNotBlank(row.getRequestedSkuCode())
+                && !seen.add(row.getRequestedSkuCode().trim().toLowerCase(Locale.ROOT));
     }
 
     private static void validateRows(List<Row> rows) {
