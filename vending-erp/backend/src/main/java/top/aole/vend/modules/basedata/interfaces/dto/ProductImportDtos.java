@@ -29,6 +29,8 @@ public final class ProductImportDtos {
         /** Excel 里的行号(报错定位用) */
         private Integer rowNo;
         private String skuCode;
+        /** 用户指定的商品编码；留空才自动分配，与匹配后输出的 skuCode 分开。 */
+        private String requestedSkuCode;
         /** 原后台编号与 ERP 编码分开保存。 */
         private String sourceCode;
         private String sourceName;

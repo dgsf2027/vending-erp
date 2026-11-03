@@ -180,6 +180,7 @@ export function changeProductStatus(id: number, targetStatus: string): Promise<P
 export interface ProductImportRow {
   rowNo?: number
   skuCode: string
+  requestedSkuCode?: string | null
   productName: string
   barcode?: string | null
   category?: string | null
@@ -282,7 +283,7 @@ export async function downloadSmartProductTemplate(): Promise<void> {
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = '商品自动编号模板.xlsx'
+  link.download = '商品导入模板.xlsx'
   link.click()
   URL.revokeObjectURL(url)
 }

@@ -62,4 +62,26 @@ class ProductCatalogMatcherTest {
         Row r = row("茉莉清茶", null); matcher().resolve(r); assertEquals(1L, r.getExistingProductId());
         Row conflict = row("茉莉茶1L", "00123"); matcher().resolve(conflict); assertEquals("待确认", conflict.getAction());
     }
+
+    @Test void suppliedCodeCannotOverrideConflictingBarcodeOrCapacity() {
+        Row conflict = row(tea.getProductName(), water.getBarcode());
+        conflict.setRequestedSkuCode(tea.getSkuCode()); matcher().resolve(conflict);
+        assertEquals("待确认", conflict.getAction()); assertNull(conflict.getExistingProductId());
+        Row size = row("茉莉茶1L", tea.getBarcode());
+        size.setRequestedSkuCode(tea.getSkuCode()); matcher().resolve(size);
+        assertEquals("待确认", size.getAction());
+        Row tooLong = row("全新面包", null);
+        tooLong.setRequestedSkuCode("123456789012345678901234567890123"); matcher().resolve(tooLong);
+        assertEquals("待确认", tooLong.getAction());
+    }
+
+    @Test void suppliedCodeRecognizesAliasesAndRequiresExplicitChoiceForRenamedProduct() {
+        Row r = row("茉莉清茶", null); r.setRequestedSkuCode("sp000001"); matcher().resolve(r);
+        assertEquals("已匹配", r.getAction()); assertEquals(tea.getSkuCode(), r.getSkuCode());
+        Row renamed = row("全新名字", null); renamed.setRequestedSkuCode(tea.getSkuCode());
+        renamed.setSourceCode("100"); matcher().resolve(renamed);
+        assertEquals("待确认", renamed.getAction());
+        renamed.setSelectedProductId(tea.getId()); matcher().resolve(renamed);
+        assertEquals("已匹配", renamed.getAction());
+    }
 }

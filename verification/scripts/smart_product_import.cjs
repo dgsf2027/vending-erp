@@ -12,12 +12,12 @@ const fixtures = [
   { rowNo: 2, productName: tea.productName, sourceCode: '00100', barcode: '00123', action: '已匹配', existingProductId: 7, skuCode: tea.skuCode, matchedProductName: tea.productName, unit: '瓶', boxSpec: '12' },
   { rowNo: 3, productName: '测试面包80g', sourceCode: '00101', barcode: '00456', action: '资料缺失', errorMsg: '请填写基本单位', skuCode: '' },
   { rowNo: 4, productName: '测试茉莉绿茶500ml', sourceCode: '00102', barcode: '', action: '待确认', errorMsg: '发现相似商品', candidates: [tea], skuCode: '' },
-  { rowNo: 5, productName: '测试巧克力20g', sourceCode: '00103', barcode: '00789', action: '新增商品', unit: '块', boxSpec: '10', skuCode: '' },
+  { rowNo: 5, productName: '测试巧克力20g', sourceCode: '00103', requestedSkuCode: '00103', barcode: '00789', action: '新增商品', unit: '块', boxSpec: '10', skuCode: '' },
 ];
 const clone = value => JSON.parse(JSON.stringify(value));
 const errors = [], commits = [], manualCommits = [], unexpected = [], passed = [];
 let genericUploads = 0, parseCalls = 0, templateCalls = 0;
-let failParse = true;
+let failParse = true, failReview = false;
 const ok = (route, data) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 200, data }) });
 const check = async (fn, message) => {
   const end = Date.now() + 12000;
@@ -47,6 +47,10 @@ const check = async (fn, message) => {
       return route.fulfill({ status: 200, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', body: Buffer.from('UI download fixture; actual XLSX format tested by controller tests') });
     }
     if (url.pathname.endsWith('/smart-import/review')) {
+      if (failReview) {
+        failReview = false;
+        return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ message: '模拟检查暂不可用' }) });
+      }
       const rows = req.postDataJSON().rows;
       for (const row of rows) {
         row.errorMsg = null;
@@ -62,13 +66,13 @@ const check = async (fn, message) => {
       if (payload.manualEntry) {
         manualCommits.push(payload); assert.equal(payload.token, '');
         return ok(route, { created: payload.rows.length, matched: 0, updated: 0, failed: 0,
-          savedRows: payload.rows.map(r => ({ ...r, skuCode: 'SP000900', action: '已新增' })), failedRows: [], errors: [] });
+          savedRows: payload.rows.map(r => ({ ...r, skuCode: r.requestedSkuCode || 'SP000900', action: '已新增' })), failedRows: [], errors: [] });
       }
       commits.push(payload);
       assert.equal(payload.token, 'test-upload');
       const fail = commits.length === 1 ? payload.rows.filter(r => r.rowNo === 5).map(r => ({ ...r, action: '资料缺失', errorMsg: '模拟保存失败，请重新检查' })) : [];
       const saved = payload.rows.filter(r => !fail.some(f => f.rowNo === r.rowNo)).map(r => ({
-        ...r, skuCode: r.skuCode || 'SP000' + r.rowNo + '01', action: r.existingProductId ? '已匹配' : '已新增',
+        ...r, skuCode: r.requestedSkuCode || r.skuCode || 'SP000' + r.rowNo + '01', action: r.existingProductId ? '已匹配' : '已新增',
       }));
       return ok(route, { created: saved.filter(r => r.action === '已新增').length, matched: saved.filter(r => r.action === '已匹配').length, updated: 0, failed: fail.length, savedRows: saved, failedRows: fail, errors: [] });
     }
@@ -89,13 +93,14 @@ const check = async (fn, message) => {
     await page.goto(base + '/import/products');
     const dialog = page.locator('#product-import-workspace');
     await dialog.getByText('商品导入工作台', { exact: true }).waitFor();
-    await dialog.getByRole('columnheader', { name: 'ERP 编码 / 原始标识' }).waitFor();
-    assert.equal(await dialog.getByRole('button', { name: /确认入档/ }).isDisabled(), true);
+    await dialog.getByRole('columnheader', { name: '商品编码', exact: true }).waitFor();
+    assert.equal(await dialog.getByRole('button', { name: /检查并导入/ }).isDisabled(), true);
+    assert.equal(await page.locator('.channel-flow').count(), 0);
     assert.equal(parseCalls, 0);
     await page.screenshot({ path: path.join(out, 'always-visible-workspace.png'), fullPage: true });
     const templateDownload = page.waitForEvent('download');
     await dialog.getByRole('button', { name: '下载模板', exact: true }).click();
-    assert.equal((await templateDownload).suggestedFilename(), '商品自动编号模板.xlsx');
+    assert.equal((await templateDownload).suggestedFilename(), '商品导入模板.xlsx');
     assert.equal(templateCalls, 1);
     const fixture = { name: '测试商品.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from('synthetic') };
     await dialog.locator('input[type=file]').setInputFiles(fixture);
@@ -104,14 +109,22 @@ const check = async (fn, message) => {
     await dialog.getByText('测试商品.xlsx', { exact: true }).waitFor();
     assert.equal(parseCalls, 2); assert.equal(genericUploads, 0);
     passed.push('workspace controls visible before upload, authenticated template download and persistent upload error/retry');
-    assert.equal(await dialog.getByRole('button', { name: /确认入档/ }).isDisabled(), true);
-    assert.equal(await dialog.getByRole('checkbox', { name: '更新已有商品资料' }).isChecked(), false);
+    assert.equal(await dialog.getByRole('textbox', { name: '商品编码第5行', exact: true }).inputValue(), '00103');
+    assert.equal(await dialog.getByRole('textbox', { name: '条码第5行', exact: true }).count(), 0);
+    assert.equal(await dialog.getByRole('textbox', { name: '参考成本', exact: true }).count(), 0);
+    const normalRow = dialog.locator('.el-table__row').filter({ has: page.getByRole('textbox', { name: '商品名称第5行', exact: true }) });
+    assert.ok((await normalRow.boundingBox()).height < 90, 'normal row should be compact');
+    await dialog.getByRole('button', { name: '批量设置单位 / 箱规', exact: true }).click();
     await dialog.getByRole('textbox', { name: '批量基本单位', exact: true }).fill('袋');
     await dialog.getByRole('textbox', { name: '批量每箱数量', exact: true }).fill('24');
     await dialog.getByRole('button', { name: '填入勾选行', exact: true }).click();
     assert.equal(await dialog.getByRole('textbox', { name: '基本单位第2行', exact: true }).inputValue(), '瓶');
     assert.equal(await dialog.getByRole('textbox', { name: '每箱数量第3行', exact: true }).inputValue(), '24');
-    await dialog.getByRole('button', { name: tea.skuCode + ' · ' + tea.productName, exact: true }).click();
+    await dialog.getByRole('button', { name: '处理第4行', exact: true }).click();
+    const details = page.getByRole('dialog', { name: '更多资料 / 商品匹配', exact: true });
+    await details.getByRole('button', { name: tea.skuCode + ' · ' + tea.productName, exact: true }).click();
+    assert.equal(await details.getByRole('checkbox', { name: '更新已有商品资料' }).isChecked(), false);
+    await details.getByRole('button', { name: '完成，返回列表', exact: true }).click();
     await dialog.getByRole('button', { name: '重新检查', exact: true }).click();
     await check(async () => await dialog.getByRole('button', { name: /确认入档/ }).isEnabled(), 'recheck did not enable commit');
     await page.screenshot({ path: path.join(out, 'smart-product-preview.png'), fullPage: true });
@@ -119,12 +132,11 @@ const check = async (fn, message) => {
     await dialog.getByRole('button', { name: /确认入档/ }).click();
     await dialog.getByText('已保存的商品编码（3）', { exact: true }).waitFor();
     assert.equal(commits[0].rows.length, 4);
+    assert.equal(commits[0].rows[3].requestedSkuCode, '00103');
     assert.equal(commits[0].rows[0].updateExisting || false, false);
     assert.equal(await dialog.getByRole('textbox', { name: '商品名称第5行', exact: true }).count(), 1);
     assert.equal(await dialog.getByRole('textbox', { name: '商品名称第3行', exact: true }).count(), 0);
-    await dialog.getByRole('button', { name: '重新检查', exact: true }).click();
-    await check(async () => await dialog.getByRole('button', { name: /确认入档/ }).isEnabled(), 'retry not ready');
-    await dialog.getByRole('button', { name: /确认入档/ }).click();
+    await dialog.getByRole('button', { name: /检查并导入/ }).click();
     await dialog.getByText('已保存的商品编码（4）', { exact: true }).waitFor();
     assert.deepEqual(commits[1].rows.map(r => r.rowNo), [5]);
     const downloadPromise = page.waitForEvent('download');
@@ -140,16 +152,21 @@ const check = async (fn, message) => {
     await page.goto(base + '/import/products');
     await dialog.getByRole('button', { name: '＋ 手工添加商品', exact: true }).click();
     await dialog.getByRole('textbox', { name: '商品名称第1行', exact: true }).fill('测试手工新商品');
+    await dialog.getByRole('textbox', { name: '商品编码第1行', exact: true }).fill('MY000900');
     await dialog.getByRole('textbox', { name: '基本单位第1行', exact: true }).fill('瓶');
     await dialog.getByRole('textbox', { name: '每箱数量第1行', exact: true }).fill('24');
     await dialog.getByRole('button', { name: '＋ 手工添加商品', exact: true }).click();
     await dialog.getByRole('button', { name: '移除第2行', exact: true }).click();
-    await dialog.getByRole('button', { name: '重新检查', exact: true }).click();
-    await check(async () => await dialog.getByRole('button', { name: /确认入档/ }).isEnabled(), 'manual entry not ready');
-    await dialog.getByRole('button', { name: /确认入档/ }).click();
-    await dialog.getByText('SP000900', { exact: true }).waitFor();
+    failReview = true;
+    await dialog.getByRole('button', { name: /检查并导入/ }).click();
+    await dialog.getByText(/检查未完成，已保留填写内容/).waitFor();
+    assert.equal(manualCommits.length, 0, 'failed review must never submit');
+    assert.equal(await dialog.getByRole('textbox', { name: '商品编码第1行', exact: true }).inputValue(), 'MY000900');
+    await dialog.getByRole('button', { name: /检查并导入/ }).click();
+    await dialog.locator('.saved-codes').getByText('MY000900', { exact: true }).first().waitFor();
     assert.equal(manualCommits.length, 1); assert.equal(manualCommits[0].rows.length, 1);
-    passed.push('manual rows without uploading: add, remove, review, commit and generated code');
+    assert.equal(manualCommits[0].rows[0].requestedSkuCode, 'MY000900');
+    passed.push('manual rows without uploading: add, remove, one-click review and commit with own code');
     await page.goto(base + '/products');
     await page.getByRole('button', { name: /新建商品/ }).click();
     const form = page.getByRole('dialog', { name: '新建商品', exact: true });

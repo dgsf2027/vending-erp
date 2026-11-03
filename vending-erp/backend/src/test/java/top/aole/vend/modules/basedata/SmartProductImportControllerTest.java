@@ -46,9 +46,9 @@ class SmartProductImportControllerTest {
             .andReturn().getResponse().getContentAsByteArray();
         try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(content))) {
             assertEquals("商品列表", workbook.getSheetAt(0).getSheetName());
-            assertEquals("后台商品编号", workbook.getSheetAt(0).getRow(0).getCell(0).getStringCellValue());
-            assertEquals("ERP编码", workbook.getSheetAt(0).getRow(0).getCell(9).getStringCellValue());
-            assertEquals("@", workbook.getSheetAt(0).getColumnStyle(2).getDataFormatString());
+            assertEquals("商品编码", workbook.getSheetAt(0).getRow(0).getCell(0).getStringCellValue());
+            assertEquals(4, workbook.getSheetAt(0).getRow(0).getLastCellNum());
+            assertEquals("@", workbook.getSheetAt(0).getColumnStyle(0).getDataFormatString());
             assertEquals(2, workbook.getNumberOfSheets());
         }
     }
