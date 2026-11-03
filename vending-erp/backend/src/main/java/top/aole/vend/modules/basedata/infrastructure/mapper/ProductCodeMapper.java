@@ -17,4 +17,13 @@ public interface ProductCodeMapper {
 
     @Update("UPDATE yc_vend_code_sequence SET next_value=#{value} WHERE sequence_key='product_sku'")
     int advance(@Param("value") long value);
+
+    @Select("SELECT next_value FROM yc_vend_code_sequence WHERE sequence_key='sales_product_yq' FOR UPDATE")
+    Long lockSalesSequence();
+
+    @Select("SELECT sku_code FROM yc_vend_product WHERE UPPER(sku_code) LIKE 'YQ%'")
+    List<String> existingSalesCodes();
+
+    @Update("UPDATE yc_vend_code_sequence SET next_value=#{value} WHERE sequence_key='sales_product_yq'")
+    int advanceSales(@Param("value") long value);
 }

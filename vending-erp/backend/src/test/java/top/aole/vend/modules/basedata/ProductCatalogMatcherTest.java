@@ -9,6 +9,23 @@ import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ProductCatalogMatcherTest {
+    @Test void salesMatchesOnlyStableIdentityAndCreatesDistinctFlavors() {
+        Row flavor = row("茉莉绿茶500ml",null); matcher().resolveForSales(flavor);
+        assertEquals("新增商品",flavor.getAction());
+        Row same = row(" 纯净水1000毫升 ",null); matcher().resolveForSales(same);
+        assertEquals("SP000002",same.getSkuCode());
+        Row aliasName = row("茉莉清茶",null); matcher().resolveForSales(aliasName);
+        assertEquals("SP000001",aliasName.getSkuCode());
+        Row conflict = row("纯净水1L","00123"); matcher().resolveForSales(conflict);
+        assertEquals("待确认",conflict.getAction()); assertNull(conflict.getExistingProductId());
+        Row barcode = row("茉莉清茶","00123"); matcher().resolveForSales(barcode);
+        assertEquals("已匹配",barcode.getAction());
+        Row ambiguous = row("茉莉茶500ml",null);
+        new ProductCatalogMatcher(Arrays.asList(tea,product(3,"茉莉茶500ml","other")),Collections.emptyList()).resolveForSales(ambiguous);
+        assertEquals("待确认",ambiguous.getAction());
+        Row wrongBarcode = row("茉莉茶500ml","other"); matcher().resolveForSales(wrongBarcode);
+        assertEquals("待确认",wrongBarcode.getAction());
+    }
     static Product product(long id, String name, String barcode) {
         Product p = new Product(); p.setId(id); p.setSkuCode("SP00000" + id); p.setProductName(name);
         p.setBarcode(barcode); p.setUnit("瓶"); p.setBoxSpec(BigDecimal.valueOf(12)); p.setProductStatus("停售"); return p;

@@ -173,6 +173,8 @@ public final class ImportDtos {
         private int rowDup;
         /** 待绑定行数(通道1=入库但 product_id 空;通道3=进 alias_pending 的行) */
         private int pendingBind;
+        /** 本批首次发现并自动建档的商品；重复销售不重复列出。 */
+        private List<AutoCreatedProduct> autoCreatedProducts = new ArrayList<>();
         /** 改价待确认条数 */
         private int priceChangeCount;
         /** 通道2:生成转移单数 */
@@ -185,6 +187,13 @@ public final class ImportDtos {
         private int prekitVerified;
         /** 负库存红灯(待补录采购) */
         private List<NegativeStock> negativeStock = new ArrayList<>();
+    }
+
+    @Data
+    public static class AutoCreatedProduct {
+        private Long productId;
+        private String skuCode;
+        private String productName;
     }
 
     @Data

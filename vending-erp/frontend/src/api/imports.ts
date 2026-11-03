@@ -75,11 +75,18 @@ export interface CommitResp {
   rowFail: number
   rowDup: number
   pendingBind: number
+  autoCreatedProducts?: AutoCreatedProduct[]
   priceChangeCount: number
   docsCreated: number
   matchedPrePending: number
   snapshots: number
   negativeStock: NegativeStock[]
+}
+
+export interface AutoCreatedProduct {
+  productId: number
+  skuCode: string
+  productName: string
 }
 
 export interface ImportBatch {

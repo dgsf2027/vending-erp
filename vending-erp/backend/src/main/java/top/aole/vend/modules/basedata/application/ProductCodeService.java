@@ -34,4 +34,21 @@ public class ProductCodeService {
         mapper.advance(current + 1);
         return "SP" + String.format(Locale.ROOT, "%06d", current + 1);
     }
+
+    /** 销售新品使用独立 YQ 序列；先拿全局商品锁，与手工指定编码保持同一锁顺序。 */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public String nextSalesCode() {
+        lock();
+        Long value = mapper.lockSalesSequence();
+        if (value == null) throw new BizException("销售商品编号尚未初始化，请检查数据库迁移");
+        long current = value;
+        Pattern pattern = Pattern.compile("(?i)^YQ(\\d{1,18})$");
+        for (String code : mapper.existingSalesCodes()) {
+            Matcher matcher = pattern.matcher(code);
+            if (matcher.matches()) current = Math.max(current, Long.parseLong(matcher.group(1)));
+        }
+        if (current == Long.MAX_VALUE) throw new BizException("销售商品编号序列已用尽");
+        mapper.advanceSales(current + 1);
+        return "YQ" + String.format(Locale.ROOT, "%06d", current + 1);
+    }
 }

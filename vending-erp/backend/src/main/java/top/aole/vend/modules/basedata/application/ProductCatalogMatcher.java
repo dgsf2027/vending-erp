@@ -30,6 +30,15 @@ public class ProductCatalogMatcher {
     }
 
     public void resolve(Row row) {
+        resolve(row, false);
+    }
+
+    /** 销售新品只按条码/完整名称认同一商品，不因相似口味名称而阻止独立建档。 */
+    public void resolveForSales(Row row) {
+        resolve(row, true);
+    }
+
+    private void resolve(Row row, boolean sales) {
         row.setAction(null);
         row.setErrorMsg(null);
         row.setExistingProductId(null);
@@ -66,6 +75,14 @@ public class ProductCatalogMatcher {
         }
         Product hit = strong.isEmpty() ? null : byId.get(strong.iterator().next());
         if (hit != null) {
+            if (sales) {
+                Set<Long> nameIds = exactNames(row.getProductName());
+                if (!nameIds.isEmpty() && !nameIds.contains(hit.getId())) {
+                    nameIds.add(hit.getId());
+                    reject(row, "条码和商品名称指向不同档案，请核对后绑定", candidates(nameIds));
+                    return;
+                }
+            }
             if (row.isConfirmNew()) {
                 reject(row, "编号或条码已有档案，请沿用已有编码", Collections.singletonList(hit));
                 return;
@@ -90,10 +107,8 @@ public class ProductCatalogMatcher {
             accept(row, hit, "已人工确认对应商品");
             return;
         }
-        Set<Long> names = new LinkedHashSet<>();
+        Set<Long> names = exactNames(row.getProductName());
         String name = normalize(row.getProductName());
-        for (Product p : products) if (name.equals(normalize(p.getProductName()))) names.add(p.getId());
-        for (SkuAlias a : aliases) if (byId.containsKey(a.getProductId()) && name.equals(normalize(a.getAliasName()))) names.add(a.getProductId());
         if (names.size() == 1 && !row.isConfirmNew()) {
             hit = byId.get(names.iterator().next());
             if (!barcodeConflict(barcode, hit) && !conflictingSize(row.getProductName(), hit.getProductName())) {
@@ -105,7 +120,7 @@ public class ProductCatalogMatcher {
                 .filter(p -> names.contains(p.getId()) || similarity(name, normalize(p.getProductName())) >= 0.65)
                 .sorted(Comparator.comparingDouble((Product p) -> similarity(name, normalize(p.getProductName()))).reversed()
                         .thenComparing(Product::getId)).limit(5).collect(Collectors.toList());
-        if (!row.isConfirmNew() && !possible.isEmpty()) {
+        if (!row.isConfirmNew() && !possible.isEmpty() && (!sales || !names.isEmpty())) {
             reject(row, "发现同名或相似商品，请选择已有档案，或确认这是不同的新商品", possible);
             return;
         }
@@ -117,6 +132,15 @@ public class ProductCatalogMatcher {
         row.setSkuCode(null);
         row.setAction(NEW);
         row.setMatchReason("确认入档时自动生成唯一 SKU 编码");
+    }
+
+    private Set<Long> exactNames(String raw) {
+        String name = normalize(raw);
+        Set<Long> ids = new LinkedHashSet<>();
+        if (name.isEmpty()) return ids;
+        for (Product p : products) if (name.equals(normalize(p.getProductName()))) ids.add(p.getId());
+        for (SkuAlias a : aliases) if (byId.containsKey(a.getProductId()) && name.equals(normalize(a.getAliasName()))) ids.add(a.getProductId());
+        return ids;
     }
 
     /** 明确提供商品编码时，口味相近不阻断新建；编码、名称与已有绑定冲突必须处理。 */
