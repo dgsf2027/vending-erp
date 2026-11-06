@@ -9,6 +9,8 @@ import '@/styles/ledger.css'
 import App from './App.vue'
 import router from './router'
 import NumberField from '@/components/common/NumberField.vue'
+import { startHeartbeat } from '@/utils/heartbeat'
+import { getToken } from '@/utils/session'
 
 const app = createApp(App)
 app.use(createPinia())
@@ -19,3 +21,16 @@ app.use(ElementPlus, { locale: zhCn })
 // 所有 <el-input-number> 无需改动即生效。根因(疑运行时渲染问题)待浏览器调试工具恢复后再深挖。
 app.component('ElInputNumber', NumberField)
 app.mount('#app')
+
+// 平台应用日报的「使用时长」：令牌变了（登录 / 换人 / 退出）才去 /auth/me 取一次本系统用户 id
+let hbToken: string | null = null
+router.afterEach(() => {
+  const token = getToken()
+  if (token === hbToken) return
+  hbToken = token
+  if (!token) return startHeartbeat(null)
+  fetch(`${import.meta.env.VITE_API_BASE_URL || '/api'}/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
+    .then(r => (r.ok ? r.json() : null))
+    .then(r => { if (r?.data?.userId) startHeartbeat({ id: r.data.userId, name: r.data.displayName }) })
+    .catch(() => undefined)
+})
