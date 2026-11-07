@@ -154,8 +154,8 @@ export function pageProducts(params: {
 }
 
 /** 只允许删除没有业务记录/配置引用的商品,服务端验证并留痕。 */
-export function deleteProduct(id: number): Promise<void> {
-  return request.delete(`/v1/basedata/products/${id}`, opHeaders())
+export function deleteProduct(id: number, silentError = false): Promise<void> {
+  return request.delete(`/v1/basedata/products/${id}`, { ...opHeaders(), silentError })
 }
 
 export function getProduct(id: number): Promise<Product> {

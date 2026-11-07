@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { onBeforeRouteLeave, useRouter } from 'vue-router'
+import { isAxiosError } from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import type { TableInstance } from 'element-plus'
 import {
   changeProductStatus,
   deleteProduct,
@@ -47,6 +49,69 @@ const aliasProduct = ref<Product | null>(null)
 const pendingVisible = ref(false)
 const importVisible = ref(false)
 const deletingId = ref<number | null>(null)
+const table = ref<TableInstance>()
+const selected = ref<Product[]>([])
+const bulkVisible = ref(false)
+const bulkBusy = ref(false)
+const bulkStarted = ref(false)
+type DeleteState = '待删除' | '删除中' | '已删除' | '未删除' | '待核对' | '未执行'
+const bulkRows = ref<{ id: number; skuCode: string; productName: string; state: DeleteState; reason: string }[]>([])
+const deletedCount = computed(() => bulkRows.value.filter(row => row.state === '已删除').length)
+const processedCount = computed(() => bulkRows.value.filter(row => !['待删除', '删除中'].includes(row.state)).length)
+let loadVersion = 0
+
+function clearSelection() {
+  selected.value = []
+  table.value?.clearSelection()
+}
+
+function openBulkDelete() {
+  if (loading.value || deletingId.value !== null || bulkBusy.value || !selected.value.length) return
+  bulkRows.value = selected.value.filter(row => row.id != null).map(row => ({
+    id: row.id!, skuCode: row.skuCode, productName: row.productName, state: '待删除', reason: '',
+  }))
+  bulkStarted.value = false
+  bulkVisible.value = true
+}
+
+async function confirmBulkDelete() {
+  if (bulkBusy.value || bulkStarted.value || !bulkRows.value.length) return
+  bulkBusy.value = true
+  bulkStarted.value = true
+  try {
+    for (const row of bulkRows.value) {
+      row.state = '删除中'
+      try {
+        await deleteProduct(row.id, true)
+        row.state = '已删除'
+        row.reason = '商品及相关别名已删除'
+      } catch (error) {
+        if (isAxiosError(error)) {
+          row.state = '待核对'
+          row.reason = '请求未确认，请刷新商品列表核对是否已删除。'
+          for (const remaining of bulkRows.value.filter(item => item.state === '待删除')) {
+            remaining.state = '未执行'
+            remaining.reason = '请求异常，后续删除已停止。'
+          }
+          break
+        }
+        row.state = '未删除'
+        row.reason = error instanceof Error ? error.message : '删除失败，请稍后核对。'
+      }
+    }
+    // 每个商品独立调用现有删除接口，成功项不重试，业务引用检查与操作日志仍由服务端执行。
+    try { await load() } catch { /* request 已提示刷新失败，保留本次逐项结果供核对。 */ }
+  } finally {
+    bulkBusy.value = false
+  }
+}
+
+onBeforeRouteLeave(() => {
+  if (bulkBusy.value) {
+    ElMessage.warning('正在批量删除，请等待本次处理完成。')
+    return false
+  }
+})
 
 function changeSort({ prop, order }: { prop: string; order: string | null }) {
   query.sortBy = (order ? prop : 'profit') as typeof query.sortBy
@@ -56,6 +121,8 @@ function changeSort({ prop, order }: { prop: string; order: string | null }) {
 }
 
 async function load() {
+  const version = ++loadVersion
+  clearSelection()
   loading.value = true
   try {
     const page = await pageProducts({
@@ -66,10 +133,17 @@ async function load() {
       sortBy: query.sortBy,
       sortOrder: query.sortOrder,
     })
+    if (version !== loadVersion) return
+    const lastPage = Math.max(1, Math.ceil(page.total / query.size))
+    if (query.current > lastPage) {
+      query.current = lastPage
+      await load()
+      return
+    }
     rows.value = page.records
     total.value = page.total
   } finally {
-    loading.value = false
+    if (version === loadVersion) loading.value = false
   }
 }
 
@@ -184,11 +258,20 @@ defineExpose({ reload: load })
         @clear="query.current = 1; load()"
       />
       <el-button @click="importVisible = true">⬆ 导入商品列表</el-button>
+      <el-button type="danger" plain :disabled="!selected.length || loading || deletingId !== null || bulkBusy" @click="openBulkDelete">
+        批量删除{{ selected.length ? `（${selected.length}）` : '' }}
+      </el-button>
       <el-button type="primary" @click="openCreate">＋ 新建商品</el-button>
     </div>
 
     <div class="ledger-card" style="padding: 0; overflow: hidden">
-      <el-table :data="rows" v-loading="loading" :default-sort="{ prop: 'profit', order: 'descending' }" @sort-change="changeSort" @row-dblclick="openEdit">
+      <div class="selection-bar">
+        <span>已选 <b>{{ selected.length }}</b> 个商品 · 表头勾选可全选本页</span>
+        <el-button v-if="selected.length" link type="primary" @click="clearSelection">取消选择</el-button>
+        <span class="mini">翻页或切换筛选后清空选择</span>
+      </div>
+      <el-table ref="table" row-key="id" :data="rows" v-loading="loading" :default-sort="{ prop: 'profit', order: 'descending' }" @selection-change="selected = $event" @sort-change="changeSort" @row-dblclick="openEdit">
+        <el-table-column type="selection" width="48" fixed="left" :selectable="() => !bulkBusy && !loading && deletingId === null" />
         <el-table-column prop="skuCode" label="商品编号" width="180" sortable="custom" :sort-orders="['descending', 'ascending']">
           <template #default="{ row }">
             <span class="num mini" style="white-space: nowrap">{{ row.skuCode }}</span>
@@ -254,6 +337,26 @@ defineExpose({ reload: load })
         />
       </div>
     </div>
+    <el-dialog v-model="bulkVisible" :title="bulkStarted ? '批量删除结果' : '确认批量删除'" width="min(820px, 94vw)"
+      :close-on-click-modal="!bulkBusy" :close-on-press-escape="!bulkBusy" :show-close="!bulkBusy">
+      <el-alert v-if="!bulkStarted" type="warning" :closable="false" show-icon
+        :title="`将删除以下 ${bulkRows.length} 个商品及相关别名，删除后无法在页面恢复。`"
+        description="仅未使用的商品可以删除；有业务记录或配置关联的商品会保留，并显示原因。" />
+      <el-alert v-else :type="bulkBusy ? 'info' : deletedCount === bulkRows.length ? 'success' : 'warning'" :closable="false" show-icon
+        :title="bulkBusy ? `正在处理 ${processedCount} / ${bulkRows.length} 个商品` : `处理完成：已删除 ${deletedCount} 个，未删除或待核对 ${bulkRows.length - deletedCount} 个`" />
+      <el-table :data="bulkRows" max-height="380" style="margin-top: 16px" border>
+        <el-table-column prop="skuCode" label="商品编码" width="120" />
+        <el-table-column prop="productName" label="商品名称" min-width="160" />
+        <el-table-column v-if="bulkStarted" prop="state" label="结果" width="85" />
+        <el-table-column v-if="bulkStarted" prop="reason" label="说明" min-width="220" />
+      </el-table>
+      <template #footer>
+        <el-button :disabled="bulkBusy" @click="bulkVisible = false">{{ bulkStarted ? '完成' : '取消' }}</el-button>
+        <el-button v-if="!bulkStarted || bulkBusy" type="danger" :loading="bulkBusy" :disabled="bulkStarted" @click="confirmBulkDelete">
+          {{ bulkBusy ? '删除中，请稍候' : `确认删除 ${bulkRows.length} 个商品` }}
+        </el-button>
+      </template>
+    </el-dialog>
     <p v-if="!props.compact" class="ledger-foot-note">
       利润 = 商品售价 − 拿货价,默认按利润从高到低排列;点击金额列可切换排序。这里是档案参考单件利润,实际销售毛利请查看报表。
     </p>
@@ -266,6 +369,7 @@ defineExpose({ reload: load })
 </template>
 
 <style scoped>
+.selection-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--el-border-color-lighter); font-size: 12px; }
 .delete-action { color: var(--el-color-danger); }
 :deep(.el-table__header .cell) {
   white-space: nowrap;
