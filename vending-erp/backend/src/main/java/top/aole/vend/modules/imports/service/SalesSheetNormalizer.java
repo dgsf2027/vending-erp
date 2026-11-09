@@ -4,9 +4,14 @@ import top.aole.vend.modules.imports.parser.ParsedSheet;
 import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.List;
 
 /** 元气销售表与出货明细使用同一导入管线，不读取品类汇总页。 */
 final class SalesSheetNormalizer {
+    static boolean isSalesHeader(List<String> headers) {
+        return headers.contains("商品名称") && (headers.contains("订单编号") || headers.contains("订单号"))
+                && (headers.contains("销售数量") || headers.contains("出货数量"));
+    }
     static boolean isYuanqi(ParsedSheet sheet) {
         return sheet.getHeaders().contains("柜子编码") && sheet.getHeaders().contains("订单编号")
                 && sheet.getHeaders().contains("销售数量") && sheet.getHeaders().contains("支付金额")

@@ -65,7 +65,7 @@ const until = async (fn, message) => {
     await page.getByRole('heading', { name: '通道① · 销售导入', exact: true }).waitFor();
     await until(() => filters.at(-1) === '出货明细', 'sales history filter missing');
     assert.equal(await page.locator('#product-import-workspace').count(), 0);
-    await page.getByRole('columnheader', { name: '订单号', exact: true }).waitFor();
+    await page.getByRole('columnheader', { name: '订单编号', exact: true }).waitFor();
     await page.getByRole('button', { name: '查看表格：出货明细-历史.xlsx', exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: '查看表格：系统补货记录-历史.xlsx', exact: true }).count(), 0);
     await page.screenshot({ path: path.join(out, 'sales-page.png'), fullPage: true });

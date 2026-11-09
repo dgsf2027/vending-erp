@@ -16,6 +16,8 @@ import top.aole.vend.modules.basedata.infrastructure.mapper.SkuAliasMapper;
 import top.aole.vend.modules.basedata.interfaces.dto.Dtos;
 import top.aole.vend.modules.basedata.interfaces.dto.ProductImportDtos.Row;
 import java.math.BigDecimal;
+import java.util.List;
+import top.aole.vend.modules.imports.dto.ImportDtos.SalesProductPreview;
 
 /** 在销售确认事务中识别或建档；预览不会创建商品。 */
 @Service
@@ -39,6 +41,20 @@ public class SalesProductService {
         private Product product;
         private boolean created;
         private String reviewReason;
+    }
+
+    /** 一次加载档案，预览只读，不分配编码、不创建别名。 */
+    public void previewMatches(List<SalesProductPreview> items) {
+        ProductCatalogMatcher matcher = new ProductCatalogMatcher(products.selectList(null), aliases.selectList(null));
+        for (SalesProductPreview item : items) {
+            Row row = new Row();
+            row.setProductName(item.getSourceName()); row.setBarcode(item.getBarcode());
+            row.setSourceCode(aliasCode(item.getSourceName()));
+            matcher.resolveForSales(row);
+            item.setStatus(row.getAction()); item.setSkuCode(row.getSkuCode());
+            item.setProductName(row.getMatchedProductName());
+            item.setReason(row.getErrorMsg() == null ? row.getMatchReason() : row.getErrorMsg());
+        }
     }
 
     @Transactional(propagation = Propagation.MANDATORY)

@@ -46,6 +46,7 @@ class SalesProductAutoCreateTest {
     ProductService products;
     AliasService aliases;
     AliasPendingMapper pending;
+    MachineMapper machines;
     Map<Long,ImportBatch> batches = new ConcurrentHashMap<>();
     static final String[] HEADERS = {"订单号","商品名称","出货数量","商品金额(元)","设备ID","订单类型","出货时间","商品条形码","商品分类"};
 
@@ -106,7 +107,7 @@ class SalesProductAutoCreateTest {
             SaleRecord s=i.getArgument(0);
             return db.update("INSERT INTO sale VALUES(?,?,?,?,?)",s.getOrderNo(),s.getOrderType(),s.getProductId(),s.getQty(),s.getAmountReceived());
         });
-        MachineMapper machines = mock(MachineMapper.class);
+        machines = mock(MachineMapper.class);
         Machine machine = new Machine(); machine.setId(1L); machine.setDeviceId("D");
         when(machines.selectList(any())).thenReturn(Collections.singletonList(machine));
         service = new ImportService(new ExcelParser(),new AliasMatcher(am,pending),new SalesProductService(pm,am,products,aliases,codes),
@@ -205,5 +206,84 @@ class SalesProductAutoCreateTest {
         CommitResp result=commit(p); assertEquals(1,result.getRowOk()); assertEquals(1,result.getRowFail());
         assertEquals("饮料",db.queryForObject("SELECT category FROM yc_vend_product",String.class));
         assertEquals("YQ000026",result.getAutoCreatedProducts().get(0).getSkuCode());
+    }
+
+    static final String[] YUANQI = {"点位名称","柜子编码","订单时间","订单编号","商品名称","支付时间","支付金额","优惠券抵扣金额","销售数量","支付渠道（微信/支付宝）"};
+    String[] yuanqi(String order, String name, String quantity, String amount) {
+        return new String[]{"测试点位","D","2026-11-03 10:00:00",order,name,"2026-11-03 10:01:00",amount,"0",quantity,"微信"};
+    }
+
+    @Test void salesPreviewRetainsOriginalColumnsAndShowsWholeFileTotalsAndCodesWithoutWriting() throws Exception {
+        db.update("INSERT INTO yc_vend_product(sku_code,name,unit,pack) VALUES('YQ000007','外星人电解质水600ml','瓶',15)");
+        long id=db.queryForObject("SELECT id FROM yc_vend_product",Long.class);
+        db.update("INSERT INTO alias VALUES(?,?,?,?)",SalesProductService.aliasCode("外星人电解质水荔枝600ml"),"","外星人电解质水荔枝600ml",id);
+        String[] first=yuanqi("A","外星人电解质水荔枝600ml","2","11.6"); first[7]="1.5";
+        PreviewResp p=upload(excel(YUANQI,first,yuanqi("A","新品茶500ml","1","4.8")));
+        assertTrue(p.isColumnsOk()); assertEquals(Arrays.asList(YUANQI),p.getSourceHeaders());
+        assertEquals("11.6",p.getSourcePreviewRows().get(0).get("支付金额"));
+        assertEquals("11.6",p.getPreviewRows().get(0).get("商品金额(元)"));
+        SalesPreview s=p.getSales(); assertEquals(1,s.getOrderCount()); assertEquals(2,s.getProductCount());
+        assertEquals(0,s.getQuantity().compareTo(new java.math.BigDecimal("3")));
+        assertEquals(0,s.getAmount().compareTo(new java.math.BigDecimal("16.4")));
+        assertEquals(0,s.getDiscount().compareTo(new java.math.BigDecimal("1.5")));
+        assertEquals("YQ000007",s.getProducts().get(0).getSkuCode()); assertEquals("新增商品",s.getProducts().get(1).getStatus());
+        assertEquals(0,s.getInvalidRows()); assertTrue(s.getMissingMachines().isEmpty());
+        assertEquals(1,count("yc_vend_product")); assertEquals(1,count("alias")); assertEquals(0,count("sale")); assertEquals(25,sequence());
+        PreviewResp refreshed=service.applyFix(p.getToken(),Collections.emptyMap());
+        assertEquals(s,refreshed.getSales()); assertEquals(p.getSourcePreviewRows(),refreshed.getSourcePreviewRows());
+        CommitResp result=commit(refreshed); assertEquals(2,result.getRowOk()); assertEquals(0,result.getRowFail());
+        assertEquals(0,db.queryForObject("SELECT sum(amount) FROM sale",java.math.BigDecimal.class).compareTo(s.getAmount()));
+    }
+
+    @Test void salesPreviewFindsMissingMachinesAndInvalidRowsBeforeConfirmation() throws Exception {
+        String[] missing=yuanqi("A","测试茶","1","5"); missing[1]="UNKNOWN";
+        String[] bad=yuanqi("B","测试茶","0","5");
+        String[] date=yuanqi("C","测试茶","1","5");date[2]="不是日期";
+        PreviewResp p=upload(excel(YUANQI,missing,bad,date));
+        assertEquals(Collections.singletonList("UNKNOWN"),p.getSales().getMissingMachines());
+        assertEquals(2,p.getSales().getInvalidRows()); assertEquals(2,p.getSales().getIssues().size());
+        assertTrue(p.getSales().getIssues().get(0).startsWith("第3行"));
+        assertEquals(0,count("sale")); assertEquals(0,count("yc_vend_product"));
+    }
+
+    @Test void titleRowsAreSkippedConsistentlyAtUploadRefreshAndCommit() throws Exception {
+        byte[] original=excel(YUANQI,yuanqi("A","测试茶","1","5"));
+        byte[] data;
+        try(XSSFWorkbook wb=new XSSFWorkbook(new ByteArrayInputStream(original)); ByteArrayOutputStream out=new ByteArrayOutputStream()) {
+            org.apache.poi.ss.usermodel.Sheet sheet=wb.getSheetAt(0);
+            sheet.shiftRows(0,1,2); sheet.createRow(0).createCell(0).setCellValue("元气森林销售汇总标题");
+            wb.write(out);data=out.toByteArray();
+        }
+        PreviewResp p=upload(data); assertTrue(p.isColumnsOk());assertEquals(1,p.getRowTotal());
+        assertEquals("点位名称",p.getSourceHeaders().get(0));
+        assertTrue(service.applyFix(p.getToken(),Collections.emptyMap()).isColumnsOk());
+        assertEquals(1,commit(p).getRowOk());
+    }
+
+    /** 仅本地传入用户文件，使用隔离 H2，不提交业务附件。 */
+    @Test void suppliedSalesWorkbookImportsAllLinesAndRepeatsWithoutDoubleCounting() throws Exception {
+        String source=System.getProperty("vend.test.salesFile"); Assumptions.assumeTrue(source!=null);
+        byte[] data=java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(source));
+        top.aole.vend.modules.imports.parser.ParsedSheet raw=new ExcelParser().parse(new ByteArrayInputStream(data));
+        Map<String,Machine> deviceMap=new LinkedHashMap<>(); Set<String> names=new LinkedHashSet<>();
+        for(top.aole.vend.modules.imports.parser.ParsedSheet.Row row:raw.getRows()) {
+            if(!deviceMap.containsKey(row.get("柜子编码"))) {
+                Machine machine=new Machine();machine.setId((long)deviceMap.size()+1);machine.setDeviceId(row.get("柜子编码"));deviceMap.put(machine.getDeviceId(),machine);
+            }
+            names.add(row.get("商品名称"));
+        }
+        when(machines.selectList(any())).thenReturn(new ArrayList<>(deviceMap.values()));
+        int code=0;for(String name:names)db.update("INSERT INTO yc_vend_product(sku_code,name,unit,pack) VALUES(?,?,'瓶',15)",String.format("YQ%06d",++code),name);
+        PreviewResp p=upload(data); assertTrue(p.isColumnsOk());assertEquals(3403,p.getRowTotal());assertEquals(20,p.getSourcePreviewRows().size());
+        assertEquals(2903,p.getSales().getOrderCount());assertEquals(10,p.getSales().getMachineCount());assertEquals(25,p.getSales().getProductCount());
+        assertEquals(0,p.getSales().getQuantity().compareTo(new java.math.BigDecimal("3816")));
+        assertEquals(0,p.getSales().getAmount().compareTo(new java.math.BigDecimal("16896.49")));
+        assertEquals(0,p.getSales().getInvalidRows());assertTrue(p.getSales().getMissingMachines().isEmpty());
+        assertTrue(p.getSales().getProducts().stream().allMatch(v->v.getSkuCode()!=null)); assertEquals(0,count("sale"));
+        CommitResp first=commit(p);assertEquals(3403,first.getRowOk());assertEquals(0,first.getRowFail());assertEquals(0,first.getPendingBind());
+        assertTrue(first.getAutoCreatedProducts().isEmpty());assertEquals(25,count("yc_vend_product"));
+        assertEquals(0,db.queryForObject("SELECT sum(qty) FROM sale",java.math.BigDecimal.class).compareTo(new java.math.BigDecimal("3816")));
+        assertEquals(0,db.queryForObject("SELECT sum(amount) FROM sale",java.math.BigDecimal.class).compareTo(new java.math.BigDecimal("16896.49")));
+        CommitResp repeat=commit(upload(data));assertEquals(3403,repeat.getRowDup());assertEquals(0,repeat.getRowOk());assertEquals(3403,count("sale"));
     }
 }

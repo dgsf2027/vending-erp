@@ -63,6 +63,40 @@ public final class ImportDtos {
         /** 前 20 行原样预览(表头名→值) */
         private List<Map<String, String>> previewRows = new ArrayList<>();
         private List<String> warnings = new ArrayList<>();
+        /** 销售原表展示，不让内部列映射改变用户熟悉的表头。 */
+        private List<String> sourceHeaders = new ArrayList<>();
+        private List<Map<String, String>> sourcePreviewRows = new ArrayList<>();
+        private SalesPreview sales;
+    }
+
+    @Data
+    public static class SalesPreview {
+        private String format;
+        private int orderCount;
+        private int machineCount;
+        private int productCount;
+        private BigDecimal quantity = BigDecimal.ZERO;
+        private BigDecimal amount = BigDecimal.ZERO;
+        private BigDecimal discount = BigDecimal.ZERO;
+        private String dateFrom;
+        private String dateTo;
+        private int invalidRows;
+        private List<String> issues = new ArrayList<>();
+        private List<String> missingMachines = new ArrayList<>();
+        private List<SalesProductPreview> products = new ArrayList<>();
+    }
+
+    @Data
+    public static class SalesProductPreview {
+        private String sourceName;
+        private String barcode;
+        private String skuCode;
+        private String productName;
+        private String status;
+        private String reason;
+        private int rowCount;
+        private BigDecimal quantity = BigDecimal.ZERO;
+        private BigDecimal amount = BigDecimal.ZERO;
     }
 
     @Data

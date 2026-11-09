@@ -21,6 +21,7 @@ import {
 } from '@/api/imports'
 import AliasPendingDrawer from '@/components/basedata/AliasPendingDrawer.vue'
 import ImportFileDrawer from '@/components/imports/ImportFileDrawer.vue'
+import SalesImportReview from '@/components/imports/SalesImportReview.vue'
 import SmartProductImportDialog from '@/components/basedata/SmartProductImportDialog.vue'
 import LlmTransparencyBadge from '@/components/ai/LlmTransparencyBadge.vue'
 import { isMobile } from '@/utils/viewport'
@@ -54,10 +55,10 @@ const channels: Channel[] = [
     type: '出货明细',
     icon: '💰',
     title: '通道① · 销售导入',
-    desc: '导入售卖机后台的出货明细，核对后生成销售记录。',
-    purpose: '从后台导出《出货明细》，上传 .xls 或 .xlsx 文件。',
+    desc: '直接上传元气森林销售表，自动识别柜子、商品、数量和实收金额。',
+    purpose: '上传现有销售表，无需改表头；也兼容原出货明细。',
     outcome: '已有商品沿用原码；首次出现的商品自动建档并分配 YQ 编码，身份冲突才需人工核对。',
-    columns: ['订单号', '商品名称', '出货数量', '商品金额(元)', '设备ID', '订单类型', '出货时间'],
+    columns: ['点位名称', '柜子编码', '订单时间', '订单编号', '商品名称', '支付时间', '支付金额', '优惠券抵扣金额', '销售数量', '支付渠道（微信/支付宝）'],
     tags: ['新品自动编号', '重复自动跳过', '销售记录'],
     relatedPath: '/reports', relatedLabel: '查看销售报表',
   },
@@ -128,7 +129,9 @@ function makeUploader(type: ImportFileType) {
   }
 }
 
-const previewColumns = computed(() => preview.value?.headers ?? [])
+const previewColumns = computed(() => preview.value?.sourceHeaders?.length ? preview.value.sourceHeaders : preview.value?.headers ?? [])
+const previewDataRows = computed(() => preview.value?.sourcePreviewRows?.length ? preview.value.sourcePreviewRows : preview.value?.previewRows ?? [])
+const canConfirm = computed(() => !!preview.value?.columnsOk && !preview.value.sales?.invalidRows && !preview.value.sales?.missingMachines.length)
 
 // ---------- 导入自愈(接入点#9 IMPORT_FIX)----------
 const fixSuggesting = ref(false)
@@ -168,11 +171,11 @@ async function applyFix() {
   try {
     const resp = await importsApi.fixApply(preview.value.token, fixMap.value)
     preview.value = resp
-    if (resp.columnsOk) {
-      ElMessage.success('列映射已应用,现在可以确认导入了')
+    if (resp.columnsOk && !resp.sales?.invalidRows && !resp.sales?.missingMachines.length) {
+      ElMessage.success(resp.sales ? '核对完成，可以确认导入' : '列映射已应用,现在可以确认导入了')
       fixResult.value = null
     } else {
-      ElMessage.warning('还有必填列没对上,请继续调整')
+      ElMessage.warning(resp.columnsOk ? '仍有待解决的问题，请查看预览提示' : '还有必填列没对上,请继续调整')
     }
   } finally {
     fixApplying.value = false
@@ -180,7 +183,7 @@ async function applyFix() {
 }
 
 async function confirmImport() {
-  if (!preview.value) return
+  if (!preview.value || !canConfirm.value || confirming.value) return
   confirming.value = true
   try {
     const resp = await importsApi.confirm(preview.value.token)
@@ -580,22 +583,25 @@ function showNewProducts(products: import('@/api/imports').AutoCreatedProduct[])
           title="销售新品自动编号已开启"
           description="确认导入时，首次出现的商品自动分配 YQ 编码。重复销售沿用原码；箱规和进货成本可在商品档案补充。" />
         <div class="workbench-heading">
-          <div><h3>{{ activeChannel.type }}录入区</h3><p>{{ activeChannel.outcome }}</p></div>
+          <div><h3>{{ activeChannel.key === 'sales' ? '销售表录入区' : activeChannel.type + '录入区' }}</h3><p>{{ activeChannel.outcome }}</p></div>
           <el-button v-if="preview" type="primary" :disabled="!!uploading" @click="previewVisible = true">继续核对并导入</el-button>
         </div>
         <el-alert v-if="uploadError" type="error" :closable="false" :title="uploadError" class="mb-12px" />
         <el-upload class="channel-upload" :show-file-list="false" accept=".xls,.xlsx" :disabled="!!uploading || confirming"
           :http-request="makeUploader(activeChannel.type)" drag>
-          <div class="upload-label">{{ uploading ? '正在解析表格…' : '点击选择' + activeChannel.type + '表格，或拖拽到这里' }}</div>
+          <div class="upload-label">{{ uploading ? '正在解析表格…' : activeChannel.key === 'sales' ? '点击上传销售表，或拖拽到这里' : '点击选择' + activeChannel.type + '表格，或拖拽到这里' }}</div>
           <div class="upload-note">支持 .xls / .xlsx · 上传后先预览核对 · 原始文件自动归档</div>
         </el-upload>
+        <el-alert v-if="activeChannel.key === 'sales' && !preview" type="info" :closable="false" class="mt-12px"
+          title="直接使用你的销售表，下面10列无需改名，也不必另外填写商品编码。"
+          description="柜子编码对应机器，销售数量按瓶/罐等基本单位；支付金额是该行商品实收，不是单价。上传后可查看整表合计和商品编码匹配结果。" />
         <div class="preview-caption">
           <b>{{ preview ? preview.fileName + ' · 共 ' + preview.rowTotal + ' 行' : '待导入明细' }}</b>
           <span>{{ preview ? '以下显示前 20 行，点击“继续核对并导入”确认' : '上传前可先对照下方字段准备资料' }}</span>
         </div>
-        <el-table :data="preview?.previewRows || []" border size="small" max-height="330">
+        <el-table :data="previewDataRows" border size="small" max-height="330">
           <el-table-column v-for="column in preview ? previewColumns : activeChannel.columns" :key="column" :prop="column" :label="column" min-width="125" show-overflow-tooltip />
-          <template #empty><div class="channel-empty">尚未选择{{ activeChannel.type }}表格，上传后在这里显示明细。</div></template>
+          <template #empty><div class="channel-empty">{{ activeChannel.key === 'sales' ? '选择元气森林销售表后，自动识别以上字段并显示预览。' : '尚未选择' + activeChannel.type + '表格，上传后在这里显示明细。' }}</div></template>
         </el-table>
       </el-card>
     </template>
@@ -772,7 +778,7 @@ function showNewProducts(products: import('@/api/imports').AutoCreatedProduct[])
     <ImportFileDrawer v-model="fileVisible" :batch="fileBatch" />
 
     <!-- 预览确认对话框(两步式第②步) -->
-    <el-dialog v-model="previewVisible" :title="`预览核对 · ${preview?.fileName ?? ''}`" width="min(1120px, 96vw)" top="4vh"
+    <el-dialog v-model="previewVisible" class="import-preview-dialog" :title="`预览核对 · ${preview?.fileName ?? ''}`" width="min(1120px, 96vw)" top="4vh"
       :close-on-click-modal="!confirming" :close-on-press-escape="!confirming" :show-close="!confirming">
       <template v-if="preview">
         <div class="mb-8px text-13px">
@@ -784,12 +790,15 @@ function showNewProducts(products: import('@/api/imports').AutoCreatedProduct[])
         <el-alert
           v-for="w in preview.warnings"
           :key="w"
-          type="error"
+          :type="preview.columnsOk ? 'info' : 'error'"
           :title="w"
           :closable="false"
           class="mb-6px"
         />
-        <div class="mb-8px">
+        <el-collapse v-if="preview.sales && preview.columnsOk" class="mb-8px"><el-collapse-item title="查看字段识别结果" name="columns">
+          <el-tag v-for="c in preview.columnChecks" :key="c.expected" :type="c.found ? 'success' : 'info'" size="small" class="mr-4px mb-4px">{{ c.found ? '✓' : '—' }} {{ c.expected }}{{ c.required ? '' : '(选填)' }}</el-tag>
+        </el-collapse-item></el-collapse>
+        <div v-else class="mb-8px">
           <el-tag
             v-for="c in preview.columnChecks"
             :key="c.expected"
@@ -843,8 +852,9 @@ function showNewProducts(products: import('@/api/imports').AutoCreatedProduct[])
           </template>
         </div>
 
-        <div style="max-height: 46vh; overflow: auto">
-          <el-table :data="preview.previewRows" size="small" border>
+        <SalesImportReview v-if="preview.sales" :preview="preview" />
+        <div v-else style="max-height: 46vh; overflow: auto">
+          <el-table :data="previewDataRows" size="small" border>
             <el-table-column
               v-for="h in previewColumns"
               :key="h"
@@ -857,8 +867,9 @@ function showNewProducts(products: import('@/api/imports').AutoCreatedProduct[])
         </div>
       </template>
       <template #footer>
+        <el-button v-if="preview?.sales" :disabled="confirming" :loading="fixApplying" @click="applyFix">重新核对档案</el-button>
         <el-button :disabled="confirming" @click="previewVisible = false">取消(不入账)</el-button>
-        <el-button type="primary" :disabled="!preview?.columnsOk" :loading="confirming" @click="confirmImport">
+        <el-button type="primary" :disabled="!canConfirm || fixApplying" :loading="confirming" @click="confirmImport">
           确认导入 → 入账
         </el-button>
       </template>
@@ -1124,6 +1135,11 @@ function showNewProducts(products: import('@/api/imports').AutoCreatedProduct[])
 </template>
 
 <style scoped>
+:global(.import-preview-dialog) { display: flex; flex-direction: column; max-height: 92vh; margin-bottom: 0; }
+:global(.import-preview-dialog .el-dialog__body) { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+:global(.import-preview-dialog .el-dialog__header) { flex-shrink: 0; }
+:global(.import-preview-dialog .el-dialog__footer) { flex-shrink: 0; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+:global(.import-preview-dialog .el-dialog__footer .el-button) { margin-left: 0; }
 .page-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
 .page-heading .ledger-title { margin-bottom: 0; }
 .page-links { display: flex; gap: 8px; flex-wrap: wrap; }

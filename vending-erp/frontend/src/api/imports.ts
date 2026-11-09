@@ -22,6 +22,35 @@ export interface PreviewResp {
   headers: string[]
   previewRows: Record<string, string | null>[]
   warnings: string[]
+  sourceHeaders?: string[]
+  sourcePreviewRows?: Record<string, string | null>[]
+  sales?: SalesPreview
+}
+
+export interface SalesPreview {
+  format: string
+  orderCount: number
+  machineCount: number
+  productCount: number
+  quantity: number
+  amount: number
+  discount: number
+  dateFrom: string | null
+  dateTo: string | null
+  invalidRows: number
+  issues: string[]
+  missingMachines: string[]
+  products: {
+    sourceName: string
+    barcode: string | null
+    skuCode: string | null
+    productName: string | null
+    status: string
+    reason: string | null
+    rowCount: number
+    quantity: number
+    amount: number
+  }[]
 }
 
 /** 导入自愈:单条列映射建议 */
