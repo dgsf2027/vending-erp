@@ -15,6 +15,7 @@ import java.util.Map;
 public class ParsedSheet {
 
     private List<String> headers = new ArrayList<>();
+    private int headerRowNo;
     private List<Row> rows = new ArrayList<>();
 
     @Data

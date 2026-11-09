@@ -189,6 +189,7 @@ export interface ProductImportRow {
   shelfLifeDays?: string | null
   refCost?: string | null
   refPrice?: string | null
+  caseCost?: string | null
   minDisplayQty?: string | null
   /** 在售/清仓中/停售;留空 = 新建按「在售」建档、更新保持原状态不动 */
   productStatus?: string | null

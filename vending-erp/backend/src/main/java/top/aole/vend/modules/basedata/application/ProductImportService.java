@@ -26,6 +26,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -70,10 +71,11 @@ public class ProductImportService {
             {"商品条形码", "条形码", "条码", "barcode"},
             {"商品分类", "分类", "品类", "类别"},
             {"基本单位", "单位"},
-            {"箱规", "每箱数量", "装箱数"},
+            {"箱规", "每箱数量", "装箱数", "每箱瓶/罐数", "每箱瓶数", "每箱罐数"},
             {"保质期(天)", "保质期天数", "保质期"},
-            {"参考成本", "成本", "成本价", "进价", "采购单价", "拿货价", "拿货价(元)"},
-            {"参考售价", "售价", "零售价", "销售价", "单价", "商品售价", "商品售价(元)"},
+            {"参考成本", "成本", "成本价", "进价", "采购单价", "拿货价", "拿货价(元)", "拿货价(元/瓶或罐)", "拿货价(元/瓶)", "拿货价(元/罐)", "单件拿货价(元)"},
+            {"参考售价", "售价", "零售价", "销售价", "单价", "商品售价", "商品售价(元)", "常见销售单价(元)", "销售单价(元)", "销售单价"},
+            {"整箱拿货价", "整箱拿货价(元)", "每箱拿货价", "每箱拿货价(元)"},
             {"机内上限", "机内上限建议", "货道容量"},
             {"状态", "商品状态", "销售状态"},
             {"备注", "说明"},
@@ -115,11 +117,13 @@ public class ProductImportService {
     }
 
     private ProductImportDtos.ParseResp parse(String fileName, byte[] content, boolean smart) {
-        ParsedSheet sheet = excelParser.parse(new ByteArrayInputStream(content));
+        ParsedSheet sheet = excelParser.parse(new ByteArrayInputStream(content),
+                headers -> matchHeaders(headers).containsKey("商品名称"));
 
         ProductImportDtos.ParseResp resp = new ProductImportDtos.ParseResp();
         resp.setFileName(fileName);
         resp.getHeaders().addAll(sheet.getHeaders());
+        if (sheet.getHeaderRowNo() > 1) resp.getWarnings().add("已识别第 " + sheet.getHeaderRowNo() + " 行为表头，自动跳过上方标题和说明。");
 
         // 规范列名 → 文件里的实际表头
         Map<String, String> colMap = matchHeaders(sheet.getHeaders());
@@ -151,6 +155,9 @@ public class ProductImportService {
         List<AliasPending> pendings = smart ? new ArrayList<>() : loadPendings();
         Set<Long> pendingHit = new HashSet<>();
         Set<String> seenCodes = new HashSet<>();
+        int inferredUnits = 0;
+        boolean bottleCanSheet = "每箱瓶/罐数".equals(normalize(colMap.get("箱规")))
+                || "拿货价(元/瓶或罐)".equals(normalize(colMap.get("参考成本")));
 
         for (ParsedSheet.Row raw : sheet.getRows()) {
             ProductImportDtos.Row row = new ProductImportDtos.Row();
@@ -164,9 +171,15 @@ public class ProductImportService {
             row.setShelfLifeDays(cell(raw, colMap, "保质期(天)"));
             row.setRefCost(cell(raw, colMap, "参考成本"));
             row.setRefPrice(cell(raw, colMap, "参考售价"));
+            row.setCaseCost(cell(raw, colMap, "整箱拿货价"));
             row.setMinDisplayQty(cell(raw, colMap, "机内上限"));
             row.setProductStatus(cell(raw, colMap, "状态"));
             row.setRemark(cell(raw, colMap, "备注"));
+            completeCostFromCase(row);
+            if (smart && bottleCanSheet && StrUtil.isBlank(row.getUnit())) {
+                row.setUnit(inferBottleCanUnit(row.getProductName()));
+                if (row.getUnit() != null) inferredUnits++;
+            }
 
             if (smart) {
                 row.setSourceCode(row.getSkuCode());
@@ -202,6 +215,7 @@ public class ProductImportService {
         resp.setUpdateCount(count(resp.getRows(), ProductImportDtos.ACTION_UPDATE));
         resp.setErrorCount(count(resp.getRows(), ProductImportDtos.ACTION_ERROR));
         resp.setPendingHitCount(pendingHit.size());
+        if (inferredUnits > 0) resp.getWarnings().add("已按商品名称补齐 " + inferredUnits + " 行的瓶/罐单位，请在列表核对；单位和价格均可修改。");
         return resp;
     }
 
@@ -393,6 +407,7 @@ public class ProductImportService {
         String[][] checks = {
                 {"箱规", row.getBoxSpec()}, {"保质期(天)", row.getShelfLifeDays()},
                 {"参考成本", row.getRefCost()}, {"参考售价", row.getRefPrice()},
+                {"整箱拿货价", row.getCaseCost()},
                 {"机内上限", row.getMinDisplayQty()},
         };
         for (String[] c : checks) {
@@ -407,6 +422,29 @@ public class ProductImportService {
                 return "「" + c[0] + "」不能是负数:" + c[1];
             }
         }
+        BigDecimal pack = toDecimal(row.getBoxSpec()), cost = toDecimal(row.getRefCost()), total = toDecimal(row.getCaseCost());
+        if (total != null) {
+            if (pack == null || pack.signum() <= 0 || pack.stripTrailingZeros().scale() > 0) return "填写整箱拿货价时，每箱数量必须为正整数";
+            BigDecimal expected = total.divide(pack, 4, RoundingMode.HALF_UP);
+            if (cost != null && cost.subtract(expected).abs().compareTo(new BigDecimal("0.0001")) > 0) {
+                return "单件拿货价与整箱价÷每箱数量不一致，请核对价格或箱规";
+            }
+        }
+        return null;
+    }
+
+    private void completeCostFromCase(ProductImportDtos.Row row) {
+        BigDecimal pack = toDecimal(row.getBoxSpec()), total = toDecimal(row.getCaseCost());
+        if (StrUtil.isBlank(row.getRefCost()) && pack != null && pack.signum() > 0 && total != null && total.signum() >= 0) {
+            row.setRefCost(total.divide(pack, 4, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString());
+        }
+    }
+
+    private String inferBottleCanUnit(String name) {
+        if (StrUtil.isBlank(name)) return null;
+        if (name.matches(".*[盒袋桶杯].*")) return null;
+        if (name.contains("罐") || name.contains("听装")) return "罐";
+        if (name.contains("瓶") || name.matches("(?i).*\\d+(?:\\.\\d+)?\\s*(?:ml|l|毫升|升).*")) return "瓶";
         return null;
     }
 
@@ -503,6 +541,7 @@ public class ProductImportService {
     }
 
     String validateFields(ProductImportDtos.Row row) {
+        completeCostFromCase(row);
         if (StrUtil.isBlank(row.getProductName())) return "商品名称不能为空";
         if (row.getProductName().length() > 128) return "商品名称最多 128 个字符";
         if (row.getSourceCode() != null && row.getSourceCode().length() > 64) return "后台商品编号最多 64 个字符";

@@ -47,7 +47,9 @@ class SmartProductImportControllerTest {
         try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(content))) {
             assertEquals("商品列表", workbook.getSheetAt(0).getSheetName());
             assertEquals("商品编码", workbook.getSheetAt(0).getRow(0).getCell(0).getStringCellValue());
-            assertEquals(4, workbook.getSheetAt(0).getRow(0).getLastCellNum());
+            assertEquals(7, workbook.getSheetAt(0).getRow(0).getLastCellNum());
+            String[] headers = {"商品编码", "商品名称", "常见销售单价（元）", "拿货价（元/瓶或罐）", "每箱瓶/罐数", "整箱拿货价（元）", "基本单位"};
+            for (int i=0; i<headers.length; i++) assertEquals(headers[i], workbook.getSheetAt(0).getRow(0).getCell(i).getStringCellValue());
             assertEquals("@", workbook.getSheetAt(0).getColumnStyle(0).getDataFormatString());
             assertEquals(2, workbook.getNumberOfSheets());
         }

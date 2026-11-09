@@ -113,6 +113,44 @@ class SmartProductImportServiceTest {
         assertTrue(batch.getValue().getColumnMapJson().contains("smart-product"));
         assertArrayEquals(content,Files.readAllBytes(Paths.get(batch.getValue().getArchivePath())));
     }
+    @Test void priceSheetPreviewsPricesAndPersistsThemOnlyAfterConfirmation() throws Exception {
+        ProductImportDtos.ParseResp preview=service.parse("价格.xlsx",ProductPriceSheetTest.priceSheet(false,true,true));
+        assertTrue(preview.getWarnings().stream().anyMatch(s->s.contains("第 6 行")));
+        assertEquals(2,preview.getCreateCount()); assertEquals(2,preview.getErrorCount());
+        assertEquals(0,db.queryForObject("SELECT count(*) FROM product",Integer.class));
+        List<ProductImportDtos.Row> rows=preview.getRows().subList(0,2);
+        assertEquals(2,service.commit(preview.getToken(),rows,"测试").getCreated());
+        org.mockito.ArgumentCaptor<Product> captures=org.mockito.ArgumentCaptor.forClass(Product.class);
+        verify(products,times(2)).create(captures.capture(),eq("测试"));
+        assertEquals("YQ000001",captures.getAllValues().get(0).getSkuCode());
+        assertEquals(4.8,captures.getAllValues().get(0).getRefPrice().doubleValue(),0.000001);
+        assertEquals(55.0/15,captures.getAllValues().get(0).getRefCost().doubleValue(),0.000001);
+        ProductImportDtos.ParseResp again=service.parse("价格.xlsx",ProductPriceSheetTest.priceSheet(false,true,true));
+        assertEquals(2,service.commit(again.getToken(),again.getRows().subList(0,2),"测试").getMatched());
+        verify(products,never()).update(anyLong(),any(),anyString());
+        again.getRows().get(0).setUpdateExisting(true);
+        again.getRows().get(0).setRefPrice("5.8");
+        assertEquals(1,service.commit(again.getToken(),Collections.singletonList(again.getRows().get(0)),"测试").getUpdated());
+        verify(products).update(anyLong(),argThat(p->p.getRefPrice().doubleValue()==5.8),eq("测试"));
+    }
+
+    /** 本地使用用户提供的文件验证，不把业务附件提交进仓库。 */
+    @Test void suppliedPriceWorkbookCanPreviewAndCommitInIsolatedTestDatabase() throws Exception {
+        String source=System.getProperty("vend.test.productPriceFile");
+        Assumptions.assumeTrue(source!=null);
+        Path file=Paths.get(source);
+        ProductImportDtos.ParseResp preview=service.parse(file.getFileName().toString(),Files.readAllBytes(file));
+        assertEquals(25,preview.getRowTotal()); assertEquals(0,preview.getErrorCount());
+        for (int i=0;i<25;i++) {
+            ProductImportDtos.Row row=preview.getRows().get(i);
+            assertEquals(String.format("YQ%06d",i+1),row.getRequestedSkuCode());
+            assertEquals(i+7,row.getRowNo()); assertNotNull(row.getRefCost()); assertNotNull(row.getRefPrice());
+        }
+        assertEquals("罐",preview.getRows().get(12).getUnit());
+        assertEquals("44",preview.getRows().get(24).getCaseCost());
+        ProductImportDtos.CommitResp result=service.commit(preview.getToken(),preview.getRows(),"附件测试");
+        assertEquals(25,result.getCreated()); assertEquals(0,result.getFailed());
+    }
     @Test void missingPackagingAndDuplicateRowsAreReviewErrors() throws Exception {
         ProductImportDtos.ParseResp response = service.parse("新货.xlsx",excel(new String[][]{
             {"","新品汽水","007","",""},{"","新品汽水","007","瓶","12"}}));
