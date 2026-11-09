@@ -58,6 +58,7 @@ public class SmartProductImportService {
         ProductImportDtos.ParseResp result = review(parsed.getRows());
         result.setFileName(fileName);
         result.setHeaders(parsed.getHeaders());
+        result.getWarnings().addAll(parsed.getWarnings());
         String token = UUID.randomUUID().toString();
         Upload upload = new Upload();
         upload.name = fileName == null ? "商品列表.xlsx" : fileName.replace('\\', '/').replaceAll("\\p{Cntrl}", "");
@@ -121,14 +122,14 @@ public class SmartProductImportService {
              java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
             org.apache.poi.ss.usermodel.Sheet sheet = workbook.createSheet("手工商品录入");
             String[] headers = {"行号", "后台商品编号", "商品名称", "商品条形码", "基本单位", "箱规",
-                    "参考成本", "参考售价", "商品分类", "ERP编码", "状态", "备注"};
+                    "参考成本", "参考售价", "商品分类", "ERP编码", "状态", "备注", "整箱拿货价"};
             org.apache.poi.ss.usermodel.Row head = sheet.createRow(0);
             for (int c = 0; c < headers.length; c++) head.createCell(c).setCellValue(headers[c]);
             for (int i = 0; i < rows.size(); i++) {
                 Row row = rows.get(i);
                 String[] cells = {String.valueOf(row.getRowNo()), row.getSourceCode(), row.getProductName(), row.getBarcode(),
                     row.getUnit(), row.getBoxSpec(), row.getRefCost(), row.getRefPrice(), row.getCategory(),
-                    StrUtil.blankToDefault(row.getRequestedSkuCode(), row.getSkuCode()), row.getProductStatus(), row.getRemark()};
+                    StrUtil.blankToDefault(row.getRequestedSkuCode(), row.getSkuCode()), row.getProductStatus(), row.getRemark(), row.getCaseCost()};
                 org.apache.poi.ss.usermodel.Row target = sheet.createRow(i + 1);
                 for (int c = 0; c < cells.length; c++) target.createCell(c).setCellValue(StrUtil.nullToEmpty(cells[c]));
             }

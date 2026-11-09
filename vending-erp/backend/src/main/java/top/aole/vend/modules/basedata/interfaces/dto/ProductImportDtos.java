@@ -50,6 +50,8 @@ public final class ProductImportDtos {
         private String shelfLifeDays;
         private String refCost;
         private String refPrice;
+        /** 原表整箱价，用于核对及折算单件拿货价；商品档案保存 refCost。 */
+        private String caseCost;
         private String minDisplayQty;
         /** 在售 / 清仓中 / 停售;留空 = 新建按「在售」建档、更新则保持档案现状不动 */
         private String productStatus;

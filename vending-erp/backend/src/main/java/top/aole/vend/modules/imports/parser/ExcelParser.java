@@ -16,8 +16,11 @@ import java.io.InputStream;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 
 /**
  * xls/xlsx 解析器(POI):按文件内容识别格式,读第一个 sheet,第一非空行当表头,输出规整文本。
@@ -31,28 +34,21 @@ public class ExcelParser {
     private final DataFormatter formatter = new DataFormatter();
 
     public ParsedSheet parse(InputStream in) {
+        return parse(in, null);
+    }
+
+    /** 可选表头识别只由商品导入启用；其他导入仍使用第一非空行。 */
+    public ParsedSheet parse(InputStream in, Predicate<List<String>> headerMatcher) {
         try (Workbook wb = openWorkbook(in)) {
             Sheet sheet = wb.getSheetAt(0);
             ParsedSheet result = new ParsedSheet();
-            int headerRowIdx = -1;
-            Map<Integer, String> colIndex = new HashMap<>();
+            int headerRowIdx = findHeader(sheet, headerMatcher);
+            if (headerRowIdx < 0) throw new BizException("文件内容为空:找不到表头行");
+            Map<Integer, String> colIndex = headersOf(sheet.getRow(headerRowIdx));
+            result.setHeaderRowNo(headerRowIdx + 1);
+            result.getHeaders().addAll(colIndex.values());
             for (Row row : sheet) {
-                if (headerRowIdx < 0) {
-                    // 第一非空行 = 表头
-                    boolean any = false;
-                    for (Cell cell : row) {
-                        String text = cellText(cell);
-                        if (text != null && !text.trim().isEmpty()) {
-                            any = true;
-                            colIndex.put(cell.getColumnIndex(), text.trim());
-                        }
-                    }
-                    if (any) {
-                        headerRowIdx = row.getRowNum();
-                        result.getHeaders().addAll(colIndex.values());
-                    }
-                    continue;
-                }
+                if (row.getRowNum() <= headerRowIdx) continue;
                 ParsedSheet.Row parsed = new ParsedSheet.Row();
                 parsed.setRowNo(row.getRowNum() + 1);
                 boolean any = false;
@@ -70,13 +66,33 @@ public class ExcelParser {
                     result.getRows().add(parsed);
                 }
             }
-            if (headerRowIdx < 0) {
-                throw new BizException("文件内容为空:找不到表头行");
-            }
             return result;
         } catch (IOException e) {
             throw new BizException("Excel 解析失败，请上传未加密、未损坏的 .xls 或 .xlsx 文件");
         }
+    }
+
+    private int findHeader(Sheet sheet, Predicate<List<String>> matcher) {
+        int first = -1;
+        for (Row row : sheet) {
+            Map<Integer, String> headers = headersOf(row);
+            if (headers.isEmpty()) continue;
+            if (first < 0) first = row.getRowNum();
+            if (matcher == null) return first;
+            if (row.getRowNum() >= 50) break;
+            if (matcher.test(new ArrayList<>(headers.values()))) return row.getRowNum();
+        }
+        // 保留原表头，调用方可继续报告实际列名和缺失列。
+        return first;
+    }
+
+    private Map<Integer, String> headersOf(Row row) {
+        Map<Integer, String> headers = new LinkedHashMap<>();
+        for (Cell cell : row) {
+            String text = cellText(cell);
+            if (text != null && !text.trim().isEmpty()) headers.put(cell.getColumnIndex(), text.trim());
+        }
+        return headers;
     }
 
     /**

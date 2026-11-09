@@ -25,12 +25,16 @@ const bulkPack = ref('')
 const table = ref<TableInstance>()
 const workspace = ref<HTMLElement>()
 const actionError = ref('')
+const parseHints = ref<string[]>([])
 const manualEntry = ref(true)
 const showBatch = ref(false)
 const detailRow = ref<ProductImportRow | null>(null)
 let generation = 0
 let loadedFile: File | null = null
 const chosen = computed(() => rows.value.filter(r => selected.value.has(r.rowNo!)))
+const chosenExisting = computed(() => chosen.value.filter(r => r.existingProductId || r.selectedProductId))
+const allUpdateExisting = computed(() => chosenExisting.value.length > 0 && chosenExisting.value.every(r => r.updateExisting))
+const someUpdateExisting = computed(() => chosenExisting.value.some(r => r.updateExisting))
 const ready = (r: ProductImportRow) => !dirty.value.has(r.rowNo!) && ['新增商品', '已匹配'].includes(r.action || '')
 const counts = computed(() => ({
   new: chosen.value.filter(r => ready(r) && r.action === '新增商品').length,
@@ -64,7 +68,8 @@ async function upload(file: File) {
   try {
     const response = await parseSmartProductImport(file)
     if (version !== generation || !(props.visible || props.embedded)) return
-    rows.value = response.rows; token.value = response.token || ''; fileName.value = file.name
+    rows.value = displayRows(response.rows); token.value = response.token || ''; fileName.value = file.name
+    parseHints.value = response.warnings || []
     detailRow.value = null
     selected.value = new Set(rows.value.map(r => r.rowNo!)); dirty.value = new Set()
     result.value = null; saved.value = []; page.value = 1; manualEntry.value = false; loadedFile = file
@@ -90,6 +95,7 @@ async function addRow() {
   if (busy.value || rows.value.length >= 5000) return
   if (!rows.value.length) {
     manualEntry.value = true; token.value = ''; fileName.value = ''; loadedFile = null
+    parseHints.value = []
   }
   const rowNo = Math.max(0, ...rows.value.map(r => r.rowNo!), ...saved.value.map(r => r.rowNo!)) + 1
   rows.value.push({ rowNo, skuCode: '', productName: '', unit: bulkUnit.value.trim(), boxSpec: bulkPack.value.trim(), action: '待填写' })
@@ -150,9 +156,33 @@ function fillBlanks() {
     let changed = false
     if (!row.unit?.trim() && bulkUnit.value.trim()) { row.unit = bulkUnit.value.trim(); changed = true }
     if (!row.boxSpec?.trim() && bulkPack.value.trim()) { row.boxSpec = bulkPack.value.trim(); changed = true }
-    if (changed) { edit(row); count++ }
+    if (changed) { changeCaseCost(row); count++ }
   }
   ElMessage.success('已补齐 ' + count + ' 行的空白单位/箱规，请重新检查')
+}
+function setUpdateExisting(value: unknown) {
+  for (const row of chosenExisting.value) { row.updateExisting = value === true; edit(row) }
+}
+function nonnegativeNumber(value?: string | null) {
+  if (!value?.trim() || !/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value.trim())) return null
+  const number = Number(value)
+  return Number.isFinite(number) && number >= 0 ? number : null
+}
+function displayRows(values: ProductImportRow[]) {
+  return values.map(row => {
+    const cost = nonnegativeNumber(row.refCost)
+    return cost === null ? row : { ...row, refCost: cost.toFixed(4) }
+  })
+}
+function changeCaseCost(row: ProductImportRow) {
+  const pack = nonnegativeNumber(row.boxSpec), total = nonnegativeNumber(row.caseCost)
+  if (pack && Number.isInteger(pack) && total !== null) row.refCost = (total / pack).toFixed(4)
+  edit(row)
+}
+function changeUnitCost(row: ProductImportRow) {
+  const pack = nonnegativeNumber(row.boxSpec), cost = nonnegativeNumber(row.refCost)
+  if (pack && Number.isInteger(pack) && cost !== null) row.caseCost = (cost * pack).toFixed(2)
+  edit(row)
 }
 async function recheck(quiet = false) {
   if (!chosen.value.length || busy.value) return false
@@ -160,7 +190,7 @@ async function recheck(quiet = false) {
   actionError.value = ''
   try {
     const response = await reviewSmartProductImport(chosen.value)
-    const byRow = new Map(response.rows.map(r => [r.rowNo, r]))
+    const byRow = new Map(displayRows(response.rows).map(r => [r.rowNo, r]))
     rows.value = rows.value.map(r => byRow.get(r.rowNo) || r)
     for (const r of response.rows) dirty.value.delete(r.rowNo!)
     if (response.errorCount) ElMessage.warning('还有 ' + response.errorCount + ' 行需要核对')
@@ -218,9 +248,10 @@ function downloadCodes() {
     :close-on-click-modal="false" :close-on-press-escape="!busy" :show-close="!busy" :before-close="close"
     class="smart-product-import" :class="{ 'embedded-workspace': embedded }" @closed="busy = false">
     <div ref="workspace" v-loading="busy" element-loading-text="正在检查和处理商品…">
-      <div v-if="embedded" class="workspace-heading"><h3>商品导入工作台</h3><span class="muted">上传后直接核对下面四项资料</span></div>
-      <div class="intro">有商品编码就直接使用，留空才自动编号。核对名称、单位和每箱数量后，即可确认导入。</div>
+      <div v-if="embedded" class="workspace-heading"><h3>商品导入工作台</h3><span class="muted">直接上传商品价格表，核对后入档</span></div>
+      <div class="intro">支持你的商品价格表：商品编码、商品名称、售价、拿货价、每箱数量、整箱价。自动跳过顶部标题和说明，已有编码直接使用。</div>
       <el-alert v-if="actionError" class="action-error" type="error" :closable="false" :title="actionError" show-icon />
+      <el-alert v-if="parseHints.length" class="parse-hints" type="info" :closable="false" :title="parseHints.join(' ')" show-icon />
       <div class="toolbar">
         <el-button type="primary" :disabled="busy" @click="input?.click()">{{ fileName ? '重新选择表格' : '选择商品表格' }}</el-button>
         <input ref="input" type="file" accept=".xls,.xlsx" hidden @change="fileChanged">
@@ -245,19 +276,20 @@ function downloadCodes() {
           <el-checkbox v-model="onlyReview">只看待检查</el-checkbox>
           <el-button link @click="selected = new Set(rows.map(r => r.rowNo!))">全选</el-button>
           <el-button link @click="selected = new Set()">全不选</el-button>
+          <el-checkbox v-if="chosenExisting.length" :model-value="allUpdateExisting" :indeterminate="someUpdateExisting && !allUpdateExisting" @change="setUpdateExisting">更新已有商品资料和价格</el-checkbox>
         </div>
         <el-table ref="table" :data="visibleRows" row-key="rowNo" max-height="58vh" size="small" border>
           <template #empty>
             <div class="empty-workspace">
               <b>{{ rows.length ? '当前筛选下没有待检查商品' : saved.length ? '本次商品已保存，可继续添加' : '商品录入区已准备好' }}</b>
-              <p>表格只需商品编码、商品名称、基本单位、箱规四列。没有编码可留空。</p>
+              <p>可直接上传含售价、拿货价和箱规的商品价格表。没有编码可留空，旧版模板也可使用。</p>
               <el-button type="primary" plain :disabled="busy" @click="addRow">添加第一行商品</el-button>
             </div>
           </template>
-          <el-table-column label="计入" width="55" fixed>
+          <el-table-column label="计入" width="50" fixed>
             <template #default="{ row }"><el-checkbox :model-value="selected.has(row.rowNo)" :aria-label="'计入第' + row.rowNo + '行'" @change="toggle(row, $event)" /></template>
           </el-table-column>
-          <el-table-column label="商品编码" width="150">
+          <el-table-column label="商品编码" width="125">
             <template #default="{ row }">
               <el-input :model-value="row.requestedSkuCode || row.skuCode || ''" placeholder="留空自动编号"
                 :aria-label="'商品编码第' + row.rowNo + '行'" @input="changeCode(row, $event)" />
@@ -269,23 +301,39 @@ function downloadCodes() {
               <div v-if="row.errorMsg && !dirty.has(row.rowNo)" class="match-hint warning">{{ row.errorMsg }}</div>
             </template>
           </el-table-column>
-          <el-table-column label="单位" width="90">
+          <el-table-column label="销售单价（元）" width="110">
+            <template #default="{ row }">
+              <el-input v-model="row.refPrice" placeholder="选填" :aria-label="'销售单价第' + row.rowNo + '行'" @input="edit(row)" />
+            </template>
+          </el-table-column>
+          <el-table-column label="拿货价（元/件）" width="120">
+            <template #default="{ row }">
+              <el-input v-model="row.refCost" placeholder="单瓶/罐价" :aria-label="'拿货价第' + row.rowNo + '行'" @input="changeUnitCost(row)" />
+            </template>
+          </el-table-column>
+          <el-table-column label="每箱数量" width="90">
+            <template #default="{ row }">
+              <el-input v-model="row.boxSpec" placeholder="单件填1" :aria-label="'每箱数量第' + row.rowNo + '行'" @input="changeCaseCost(row)" />
+            </template>
+          </el-table-column>
+          <el-table-column label="整箱价（元）" width="110">
+            <template #default="{ row }">
+              <el-input v-model="row.caseCost" placeholder="选填" :aria-label="'整箱拿货价第' + row.rowNo + '行'" @input="changeCaseCost(row)" />
+            </template>
+          </el-table-column>
+          <el-table-column label="单位" width="70">
             <template #default="{ row }">
               <el-input v-model="row.unit" placeholder="如：瓶" :aria-label="'基本单位第' + row.rowNo + '行'" @input="edit(row)" />
             </template>
           </el-table-column>
-          <el-table-column label="每箱数量" width="105">
-            <template #default="{ row }">
-              <el-input v-model="row.boxSpec" placeholder="单件填1" :aria-label="'每箱数量第' + row.rowNo + '行'" @input="edit(row)" />
-            </template>
-          </el-table-column>
-          <el-table-column label="处理结果" width="125">
+          <el-table-column label="处理结果" width="120">
             <template #default="{ row }">
               <el-tag size="small" :type="ready(row) ? 'success' : 'warning'">{{ dirty.has(row.rowNo) ? '待检查' : row.action === '已匹配' ? '沿用已有商品' : row.action === '新增商品' ? '可新增' : '需处理' }}</el-tag>
+              <div v-if="row.existingProductId" class="match-hint">{{ row.updateExisting ? '将更新资料和价格' : '保留原资料和价格' }}</div>
               <el-button v-if="!ready(row) && row.candidates?.length" class="resolve-link" link type="primary" :aria-label="'处理第' + row.rowNo + '行'" @click="detailRow = row">核对匹配</el-button>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="130" fixed="right">
+          <el-table-column label="操作" width="115" fixed="right">
             <template #default="{ row }">
               <el-button link type="primary" :aria-label="'更多资料第' + row.rowNo + '行'" @click="detailRow = row">更多资料</el-button>
               <el-button link type="danger" :aria-label="'移除第' + row.rowNo + '行'" @click="removeRow(row)">移除</el-button>
@@ -293,7 +341,7 @@ function downloadCodes() {
           </el-table-column>
         </el-table>
         <div class="toolbar pagination">
-          <span class="muted">取消勾选可暂不导入该行。价格、条码在“更多资料”中填写。</span>
+          <span class="muted">价格按基本单位保存。修改整箱价或每箱数量会重算拿货价；条码、分类在“更多资料”中填写。</span>
           <el-pagination v-model:current-page="page" :total="filtered.length" :page-size="30" layout="prev, pager, next, total" />
         </div>
       </div>
@@ -340,7 +388,7 @@ function downloadCodes() {
           <el-form-item label="条码"><el-input v-model="detailRow.barcode" placeholder="保留前导零，可空" :aria-label="'条码第' + detailRow.rowNo + '行'" @input="edit(detailRow!, true)" /></el-form-item>
           <el-form-item label="来源后台编号"><el-input v-model="detailRow.sourceCode" placeholder="原后台编号，可空" :aria-label="'后台编号第' + detailRow.rowNo + '行'" @input="edit(detailRow!, true)" /></el-form-item>
           <el-form-item label="商品分类"><el-input v-model="detailRow.category" aria-label="商品分类" @input="edit(detailRow!)" /></el-form-item>
-          <el-form-item label="参考成本 / 基本单位"><el-input v-model="detailRow.refCost" aria-label="参考成本" @input="edit(detailRow!)" /></el-form-item>
+          <el-form-item label="参考成本 / 基本单位"><el-input v-model="detailRow.refCost" aria-label="参考成本" @input="changeUnitCost(detailRow!)" /></el-form-item>
           <el-form-item label="参考售价 / 基本单位"><el-input v-model="detailRow.refPrice" aria-label="参考售价" @input="edit(detailRow!)" /></el-form-item>
         </div>
         <el-checkbox v-if="detailRow.existingProductId || detailRow.selectedProductId" v-model="detailRow.updateExisting" @change="edit(detailRow!)">更新已有商品资料</el-checkbox>
@@ -372,6 +420,7 @@ function downloadCodes() {
 .empty-workspace { padding: 22px 14px; line-height: 1.8; color: #65776b; }
 .empty-workspace p { margin: 7px 0 12px; font-size: 13px; }
 .action-error { margin-top: 12px; }
+.parse-hints { margin-top: 12px; }
 .resolve-link { display: block; margin: 5px 0 0; }
 .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
 .product-details .el-form-item { margin-bottom: 16px; }

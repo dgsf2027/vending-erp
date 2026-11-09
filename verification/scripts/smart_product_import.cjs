@@ -9,7 +9,7 @@ const out = path.resolve(__dirname, '../../vending-erp/frontend/.vite/smart-prod
 fs.mkdirSync(out, { recursive: true });
 const tea = { id: 7, skuCode: 'SP000007', productName: '测试茉莉茶500ml', unit: '瓶', boxSpec: 12, productStatus: '在售' };
 const fixtures = [
-  { rowNo: 2, productName: tea.productName, sourceCode: '00100', barcode: '00123', action: '已匹配', existingProductId: 7, skuCode: tea.skuCode, matchedProductName: tea.productName, unit: '瓶', boxSpec: '12' },
+  { rowNo: 2, productName: tea.productName, sourceCode: '00100', barcode: '00123', action: '已匹配', existingProductId: 7, skuCode: tea.skuCode, matchedProductName: tea.productName, unit: '瓶', boxSpec: '12', refPrice: '4.8', refCost: '3.5', caseCost: '42' },
   { rowNo: 3, productName: '测试面包80g', sourceCode: '00101', barcode: '00456', action: '资料缺失', errorMsg: '请填写基本单位', skuCode: '' },
   { rowNo: 4, productName: '测试茉莉绿茶500ml', sourceCode: '00102', barcode: '', action: '待确认', errorMsg: '发现相似商品', candidates: [tea], skuCode: '' },
   { rowNo: 5, productName: '测试巧克力20g', sourceCode: '00103', requestedSkuCode: '00103', barcode: '00789', action: '新增商品', unit: '块', boxSpec: '10', skuCode: '' },
@@ -40,7 +40,7 @@ const check = async (fn, message) => {
         failParse = false;
         return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ message: 'Not found' }) });
       }
-      return ok(route, { token: 'test-upload', fileName: '测试商品.xlsx', rows: clone(fixtures) });
+      return ok(route, { token: 'test-upload', fileName: '测试商品.xlsx', warnings: ['已识别第 6 行为表头，自动跳过上方标题和说明。'], rows: clone(fixtures) });
     }
     if (url.pathname.endsWith('/smart-import/template')) {
       templateCalls++; assert.equal(req.headers().authorization, 'Bearer smart-product-test');
@@ -108,6 +108,26 @@ const check = async (fn, message) => {
     await dialog.locator('input[type=file]').setInputFiles(fixture);
     await dialog.getByText('测试商品.xlsx', { exact: true }).waitFor();
     assert.equal(parseCalls, 2); assert.equal(genericUploads, 0);
+    await dialog.getByText('已识别第 6 行为表头，自动跳过上方标题和说明。', { exact: true }).waitFor();
+    for (const label of ['销售单价（元）', '拿货价（元/件）', '每箱数量', '整箱价（元）']) await dialog.getByRole('columnheader', { name: label, exact: true }).waitFor();
+    assert.equal(await dialog.getByRole('textbox', { name: '销售单价第2行', exact: true }).inputValue(), '4.8');
+    assert.equal(await dialog.getByRole('textbox', { name: '拿货价第2行', exact: true }).inputValue(), '3.5000');
+    await dialog.getByRole('textbox', { name: '整箱拿货价第2行', exact: true }).fill('48');
+    assert.equal(await dialog.getByRole('textbox', { name: '拿货价第2行', exact: true }).inputValue(), '4.0000');
+    await dialog.getByRole('textbox', { name: '每箱数量第2行', exact: true }).fill('24');
+    assert.equal(await dialog.getByRole('textbox', { name: '拿货价第2行', exact: true }).inputValue(), '2.0000');
+    await dialog.getByRole('textbox', { name: '每箱数量第2行', exact: true }).fill('12');
+    await dialog.getByRole('textbox', { name: '拿货价第2行', exact: true }).fill('3.5');
+    assert.equal(await dialog.getByRole('textbox', { name: '整箱拿货价第2行', exact: true }).inputValue(), '42.00');
+    const updateExisting = dialog.getByRole('checkbox', { name: '更新已有商品资料和价格', exact: true });
+    assert.equal(await updateExisting.isChecked(), false);
+    await dialog.getByText('更新已有商品资料和价格', { exact: true }).click();
+    assert.equal(await updateExisting.isChecked(), true);
+    await dialog.getByText('将更新资料和价格', { exact: true }).waitFor();
+    await dialog.getByText('更新已有商品资料和价格', { exact: true }).click();
+    assert.equal(await updateExisting.isChecked(), false);
+    await dialog.getByText('保留原资料和价格', { exact: true }).waitFor();
+    passed.push('price sheet columns and header recognition visible, case/unit cost recalculation and explicit bulk update choice');
     passed.push('workspace controls visible before upload, authenticated template download and persistent upload error/retry');
     assert.equal(await dialog.getByRole('textbox', { name: '商品编码第5行', exact: true }).inputValue(), '00103');
     assert.equal(await dialog.getByRole('textbox', { name: '条码第5行', exact: true }).count(), 0);
@@ -134,6 +154,9 @@ const check = async (fn, message) => {
     assert.equal(commits[0].rows.length, 4);
     assert.equal(commits[0].rows[3].requestedSkuCode, '00103');
     assert.equal(commits[0].rows[0].updateExisting || false, false);
+    assert.equal(commits[0].rows[0].refPrice, '4.8');
+    assert.equal(commits[0].rows[0].refCost, '3.5000');
+    assert.equal(commits[0].rows[0].caseCost, '42.00');
     assert.equal(await dialog.getByRole('textbox', { name: '商品名称第5行', exact: true }).count(), 1);
     assert.equal(await dialog.getByRole('textbox', { name: '商品名称第3行', exact: true }).count(), 0);
     await dialog.getByRole('button', { name: /检查并导入/ }).click();
