@@ -69,6 +69,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -161,15 +162,20 @@ public class ImportService {
 
     public PreviewResp upload(String fileType, String fileName, byte[] content) {
         String[][] spec = specOf(fileType);
-        ParsedSheet sheet = excelParser.parse(new ByteArrayInputStream(content));
+        ParsedSheet sheet = parseUpload(fileType, content);
         boolean yuanqi = ImportBatch.TYPE_SALE.equals(fileType) && SalesSheetNormalizer.isYuanqi(sheet);
+        List<String> sourceHeaders = new ArrayList<>(sheet.getHeaders());
+        List<Map<String, String>> sourceRows = sourcePreview(sheet);
         normalizeReplenishHeaders(fileType, sheet);
 
         PreviewResp resp = new PreviewResp();
         resp.setFileName(fileName);
         resp.setFileType(fileType);
         fillPreview(spec, sheet, resp);
-        if (yuanqi) resp.getWarnings().add("已识别元气销售表。缺少订单类型时，正数量且非负实收按正常销售导入；退款行请补充订单类型。");
+        if (ImportBatch.TYPE_SALE.equals(fileType)) {
+            resp.setSourceHeaders(sourceHeaders); resp.setSourcePreviewRows(sourceRows);
+            fillSalesPreview(sheet, resp, yuanqi);
+        }
 
         // 暂存原始文件,等第②步确认
         String token = IdUtil.fastSimpleUUID();
@@ -182,6 +188,72 @@ public class ImportService {
         pendingUploads.put(token, pending);
         resp.setToken(token);
         return resp;
+    }
+
+    private ParsedSheet parseUpload(String fileType, byte[] content) {
+        return ImportBatch.TYPE_SALE.equals(fileType)
+                ? excelParser.parse(new ByteArrayInputStream(content), SalesSheetNormalizer::isSalesHeader)
+                : excelParser.parse(new ByteArrayInputStream(content));
+    }
+
+    private List<Map<String, String>> sourcePreview(ParsedSheet sheet) {
+        List<Map<String, String>> rows = new ArrayList<>();
+        for (int i = 0; i < Math.min(20, sheet.getRows().size()); i++) rows.add(new LinkedHashMap<>(sheet.getRows().get(i).getCells()));
+        return rows;
+    }
+
+    /** 表格合计与档案匹配只做预检；所有写入仍在确认事务中。 */
+    private void fillSalesPreview(ParsedSheet sheet, PreviewResp resp, boolean yuanqi) {
+        ImportDtos.SalesPreview result = new ImportDtos.SalesPreview();
+        result.setFormat(yuanqi ? "元气森林销售表" : "出货明细");
+        Map<String, Long> machines = loadMachines();
+        Set<String> orderIds = new HashSet<>(), deviceIds = new HashSet<>(), missing = new LinkedHashSet<>();
+        Map<String, ImportDtos.SalesProductPreview> products = new LinkedHashMap<>();
+        LocalDateTime from = null, to = null;
+        for (ParsedSheet.Row row : sheet.getRows()) {
+            String name = row.get("商品名称"), device = row.get("设备ID"), order = row.get("订单号");
+            if (order != null) orderIds.add(order);
+            if (device != null) {
+                deviceIds.add(device);
+                if (!machines.containsKey(device)) missing.add(device);
+            }
+            ImportDtos.SalesProductPreview product = null;
+            if (name != null) {
+                String key = name + "\u0001" + StrUtil.nullToEmpty(row.get("商品条形码"));
+                product = products.computeIfAbsent(key, k -> {
+                    ImportDtos.SalesProductPreview p = new ImportDtos.SalesProductPreview();
+                    p.setSourceName(name); p.setBarcode(row.get("商品条形码")); return p;
+                });
+                product.setRowCount(product.getRowCount() + 1);
+            }
+            try {
+                BigDecimal qty = parseDecimal(required(row, "出货数量"), "出货数量");
+                BigDecimal amount = parseDecimal(required(row, "商品金额(元)"), "商品金额(元)");
+                result.setQuantity(result.getQuantity().add(qty)); result.setAmount(result.getAmount().add(amount));
+                if (product != null) {
+                    product.setQuantity(product.getQuantity().add(qty)); product.setAmount(product.getAmount().add(amount));
+                }
+                if (row.get("优惠券抵扣金额") != null) result.setDiscount(result.getDiscount().add(parseDecimal(row.get("优惠券抵扣金额"), "优惠券抵扣金额")));
+                required(row, "订单号"); required(row, "设备ID"); required(row, "商品名称");
+                String type = normalizeOrderType(required(row, "订单类型"));
+                if (("正常".equals(type) || "兑换".equals(type)) && (qty.signum() <= 0 || amount.signum() < 0))
+                    throw new RowException(ImportError.TYPE_FORMAT, "正常销售数量须大于0、金额不能为负；退款请补充订单类型");
+                if (name.length() > 128 || (row.get("商品条形码") != null && row.get("商品条形码").length() > 64))
+                    throw new RowException(ImportError.TYPE_FORMAT, "商品名称或条码过长");
+                LocalDateTime time = parseDateTime(required(row, "出货时间"), "出货时间");
+                if (from == null || time.isBefore(from)) from = time;
+                if (to == null || time.isAfter(to)) to = time;
+            } catch (RowException e) {
+                result.setInvalidRows(result.getInvalidRows() + 1);
+                if (result.getIssues().size() < 20) result.getIssues().add("第" + row.getRowNo() + "行：" + e.getMessage());
+            }
+        }
+        result.setOrderCount(orderIds.size()); result.setMachineCount(deviceIds.size()); result.setProductCount(products.size());
+        result.getMissingMachines().addAll(missing); result.getProducts().addAll(products.values());
+        result.setDateFrom(from == null ? null : from.format(DT)); result.setDateTo(to == null ? null : to.format(DT));
+        salesProducts.previewMatches(result.getProducts());
+        resp.setSales(result);
+        if (yuanqi) resp.getWarnings().add("已识别元气森林销售表，无需修改表头；按订单时间记销售，支付金额作为实收，优惠券仅展示、不重复加计。未填订单类型的正常正数行自动识别。");
     }
 
     /** 售卖机后台新导出表头与旧版同义,统一为现有处理管线使用的列名。 */
@@ -280,7 +352,7 @@ public class ImportService {
             throw new BizException("暂存文件丢失,请重新上传");
         }
         String[][] spec = specOf(pending.getFileType());
-        ParsedSheet sheet = excelParser.parse(new ByteArrayInputStream(FileUtil.readBytes(tmp)));
+        ParsedSheet sheet = parseUpload(pending.getFileType(), FileUtil.readBytes(tmp));
         normalizeReplenishHeaders(pending.getFileType(), sheet);
         FixContext ctx = new FixContext();
         ctx.setFileType(pending.getFileType());
@@ -313,7 +385,10 @@ public class ImportService {
         }
         pending.setColumnMap(columnMap);
         String[][] spec = specOf(pending.getFileType());
-        ParsedSheet sheet = excelParser.parse(new ByteArrayInputStream(FileUtil.readBytes(tmp)));
+        ParsedSheet sheet = parseUpload(pending.getFileType(), FileUtil.readBytes(tmp));
+        boolean yuanqi = ImportBatch.TYPE_SALE.equals(pending.getFileType()) && SalesSheetNormalizer.isYuanqi(sheet);
+        List<String> sourceHeaders = new ArrayList<>(sheet.getHeaders());
+        List<Map<String, String>> sourceRows = sourcePreview(sheet);
         normalizeReplenishHeaders(pending.getFileType(), sheet);
         remapHeaders(sheet, columnMap);
         PreviewResp resp = new PreviewResp();
@@ -321,6 +396,10 @@ public class ImportService {
         resp.setFileName(pending.getFileName());
         resp.setFileType(pending.getFileType());
         fillPreview(spec, sheet, resp);
+        if (ImportBatch.TYPE_SALE.equals(pending.getFileType())) {
+            resp.setSourceHeaders(sourceHeaders); resp.setSourcePreviewRows(sourceRows);
+            fillSalesPreview(sheet, resp, yuanqi);
+        }
         return resp;
     }
 
@@ -454,7 +533,7 @@ public class ImportService {
         if (!tmp.exists()) {
             throw new BizException("暂存文件丢失,请重新上传");
         }
-        ParsedSheet sheet = excelParser.parse(new ByteArrayInputStream(FileUtil.readBytes(tmp)));
+        ParsedSheet sheet = parseUpload(pending.getFileType(), FileUtil.readBytes(tmp));
         normalizeReplenishHeaders(pending.getFileType(), sheet);
         // 导入自愈:若确认过列映射,把厂家改了名的表头改回期望名,下游取列逻辑无需改动
         remapHeaders(sheet, pending.getColumnMap());
