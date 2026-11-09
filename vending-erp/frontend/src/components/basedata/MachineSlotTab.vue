@@ -14,6 +14,7 @@ import {
   type Slot,
 } from '@/api/basedata'
 import ProductSelect from './ProductSelect.vue'
+import MachineImportDialog from './MachineImportDialog.vue'
 
 /**
  * 机器与货道 Tab(对照 mockup p12 左卡):
@@ -24,6 +25,8 @@ const rows = ref<Machine[]>([])
 const total = ref(0)
 const loading = ref(false)
 const query = reactive({ current: 1, size: 20 })
+const importVisible = ref(false)
+function imported() { query.current = 1; load() }
 
 // ---- 机器表单 ----
 const formVisible = ref(false)
@@ -150,9 +153,10 @@ onMounted(load)
 
 <template>
   <div>
-    <div class="ledger-card" style="display: flex; gap: 10px; align-items: center">
+    <div class="ledger-card" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap">
       <span class="mini">🏭 <b>后台设备ID是与厂家后台(fanmaiji.top)对齐的锚点</b>,录错整条数据链对不上;撤点=先退库再停用,历史保留。</span>
-      <el-button type="primary" style="margin-left: auto" @click="openCreate">＋ 新增机器</el-button>
+      <el-button type="primary" style="margin-left: auto" @click="importVisible = true">导入机器列表</el-button>
+      <el-button @click="openCreate">＋ 新增机器</el-button>
     </div>
 
     <div class="ledger-card" style="padding: 0; overflow: hidden">
@@ -197,6 +201,8 @@ onMounted(load)
         />
       </div>
     </div>
+
+    <MachineImportDialog v-model:visible="importVisible" @saved="imported" />
 
     <!-- 机器表单 -->
     <el-dialog v-model="formVisible" :title="isEdit ? `编辑机器 · ${form.machineCode}` : '新增机器(上线向导第①步:建档)'" width="560px">

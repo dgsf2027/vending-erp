@@ -354,6 +354,45 @@ export function changeSupplierStatus(id: number, targetStatus: string): Promise<
 
 // ---------- 机器与货道 ----------
 
+export interface MachineImportRow {
+  rowNo: number
+  deviceId: string
+  machineName: string
+  location: string
+  machineCode: string
+  action: string
+  message: string
+  warning?: string
+  sourceRowCount?: number
+}
+export interface MachineImportPreview {
+  fileName?: string
+  headerRowNo: number
+  sourceRows: number
+  createCount: number
+  existingCount: number
+  errorCount: number
+  rows: MachineImportRow[]
+}
+export interface MachineImportResult {
+  created: number
+  skipped: number
+  rows: MachineImportRow[]
+}
+export function parseMachineList(file: File): Promise<MachineImportPreview> {
+  const data = new FormData(); data.append('file', file)
+  return request.post('/v1/basedata/machines/import/parse', data, { timeout: 120000 })
+}
+export function reviewMachineList(rows: MachineImportRow[]): Promise<MachineImportPreview> {
+  return request.post('/v1/basedata/machines/import/review', { rows }, { timeout: 120000 })
+}
+export function commitMachineList(rows: MachineImportRow[]): Promise<MachineImportResult> {
+  return request.post('/v1/basedata/machines/import/commit', { rows }, { ...opHeaders(), timeout: 120000 })
+}
+export function downloadMachineTemplate(): Promise<Blob> {
+  return request.get('/v1/basedata/machines/import/template', { responseType: 'blob' })
+}
+
 export function pageMachines(params: {
   current?: number
   size?: number
