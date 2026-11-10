@@ -213,6 +213,11 @@ export function confirmReceipt(docId: number): Promise<ReceiptDetail> {
   return request.post(`/v1/purchase/receipts/${docId}/confirm`)
 }
 
+/** 未入库单据转作废；已入库单据必须走红冲预览及确认。 */
+export function deleteReceiptDraft(docId: number): Promise<void> {
+  return request.delete(`/v1/purchase/receipts/${docId}`, opHeaders())
+}
+
 export function listReceipts(): Promise<ReceiptListRow[]> {
   return request.get('/v1/purchase/receipts')
 }

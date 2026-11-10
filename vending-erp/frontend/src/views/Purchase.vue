@@ -14,7 +14,7 @@ import {
   cancelPurchaseOrder, closePurchaseOrder, confirmReceipt, createPurchaseOrder,
   createReceipt, createReceiptFromPo, getPurchaseOrderItems, getReceipt,
   listInTransit, listReceipts, pagePurchaseOrders, placePurchaseOrder, priceCheck,
-  updateReceipt,
+  updateReceipt, deleteReceiptDraft,
   type InTransitRow, type PoItemRow, type PoVo, type PriceCheckResult,
   type ReceiptDetail, type ReceiptListRow,
 } from '@/api/purchase'
@@ -463,6 +463,36 @@ async function saveDraftOnly() {
 const receipts = ref<ReceiptListRow[]>([])
 const receiptDetailVisible = ref(false)
 const receiptDetail = ref<ReceiptDetail | null>(null)
+const showRemovedReceipts = ref(false)
+const deletingReceiptId = ref<number | null>(null)
+const removedReceiptStatuses = ['已作废', '已红冲']
+const removableReceiptStatuses = ['草稿', '待确认', '已确认', '待结算', '已结算']
+const removedReceiptCount = computed(() => receipts.value.filter(row => removedReceiptStatuses.includes(row.docStatus)).length)
+const visibleReceipts = computed(() => receipts.value.filter(row => showRemovedReceipts.value || !removedReceiptStatuses.includes(row.docStatus)))
+
+async function removeReceipt(row: Pick<ReceiptListRow, 'id' | 'docNo' | 'docStatus' | 'totalAmount'>) {
+  if (deletingReceiptId.value !== null || !removableReceiptStatuses.includes(row.docStatus)) return
+  if (!['草稿', '待确认'].includes(row.docStatus)) {
+    reverseDocId.value = row.id
+    redFlushVisible.value = true
+    return
+  }
+  deletingReceiptId.value = row.id
+  try {
+    await ElMessageBox.confirm(
+      `删除 ${row.docNo}（¥${Number(row.totalAmount || 0).toFixed(2)}）？这张单据尚未入库，删除不会改变库存，记录会保留在“显示已删除/撤销”中。`,
+      '删除采购入库单', { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' },
+    )
+    await deleteReceiptDraft(row.id)
+    if (receiptDetail.value?.head.id === row.id) receiptDetailVisible.value = false
+    ElMessage.success('已删除，库存未变动')
+    await refreshReceipts()
+  } catch {
+    // 取消不作处理；接口失败由统一请求层提示，原记录仍留在列表中。
+  } finally {
+    deletingReceiptId.value = null
+  }
+}
 
 async function refreshReceipts() {
   receipts.value = await listReceipts()
@@ -493,12 +523,6 @@ const reverseDocId = ref<number | null>(null)
 const reverseProductNames = computed<Record<number, string>>(() =>
   Object.fromEntries((receiptDetail.value?.items || [])
     .map((i: any) => [i.productId, `${i.skuCode ?? ''} · ${i.productName ?? i.productId}`])))
-
-function openRedFlush() {
-  if (!receiptDetail.value) return
-  reverseDocId.value = receiptDetail.value.head.id
-  redFlushVisible.value = true
-}
 
 function openCostAdjust() {
   if (!receiptDetail.value) return
@@ -554,14 +578,18 @@ onMounted(() => {
     <!-- 入库单历史 -->
     <div class="ledger-card">
       <h3>
-        📥 采购入库单 <span class="hint">确认后库存 +、加权成本更新;确认过的单不可改,只能红冲</span>
+        📥 采购入库单 <span class="hint">删除已入库单据时，会先核对库存和金额，再撤销入库</span>
         <span style="margin-left: auto; display: flex; gap: 8px">
           <el-button size="small" @click="photoImportVisible = true">📷 拍照识别</el-button>
           <el-button size="small" @click="openImport('receipt')">按表格导入</el-button>
           <el-button type="primary" size="small" @click="quickReceive">⚡ 直接录入库</el-button>
         </span>
       </h3>
-      <el-table :data="receipts" size="small">
+      <div class="receipt-list-tools">
+        <span class="mini">共 {{ visibleReceipts.length }} 张</span>
+        <el-checkbox v-model="showRemovedReceipts" size="small">显示已删除/撤销（{{ removedReceiptCount }}）</el-checkbox>
+      </div>
+      <el-table :data="visibleReceipts" size="small" row-key="id" data-testid="purchase-receipts">
         <el-table-column label="单号" width="150">
           <template #default="{ row }">
             <a class="num name-link" @click="openDocDrawer(row.id)">{{ row.docNo }} ▸</a>
@@ -588,11 +616,14 @@ onMounted(() => {
             <span v-if="row.diffCount > 0" class="chip c-amber" style="margin-left: 4px">实收差异 {{ row.diffCount }} 行</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="180">
+        <el-table-column label="操作" width="245" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openReceiptDetail(row)">详情</el-button>
             <el-button v-if="row.docStatus === '草稿'" link type="success" size="small" @click="resumeReceive(row)">继续录入</el-button>
             <el-button v-if="['草稿', '待确认'].includes(row.docStatus)" link type="success" size="small" @click="confirmFromList(row)">确认入库</el-button>
+            <el-button v-if="removableReceiptStatuses.includes(row.docStatus)" link type="danger" size="small"
+              :loading="deletingReceiptId === row.id" :disabled="deletingReceiptId !== null && deletingReceiptId !== row.id"
+              @click="removeReceipt(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -853,20 +884,21 @@ onMounted(() => {
         </el-table-column>
       </el-table>
       <p class="mini" style="margin-top: 10px">
-        确认后的单据不可改不可删:<b>数量录错→红冲</b>(整单反向,必过影响清单);<b>单价录错→成本调整</b>(不动数量只调金额)。
-        结算付款链(应付/凭证/核销)M3 开通。
+        重复导入或整单录错可点<b>删除</b>，核对影响后撤销入库，保留历史记录；仅单价录错可用<b>成本调整</b>。
       </p>
       <template #footer>
         <el-button @click="receiptDetailVisible = false">关闭</el-button>
         <template v-if="receiptDetail?.head.docStatus === '已确认'">
           <el-button type="warning" plain @click="openCostAdjust">🧮 成本调整(单价错)</el-button>
-          <el-button type="danger" plain @click="openRedFlush">🔄 红冲(数量错)</el-button>
         </template>
+        <el-button v-if="receiptDetail && removableReceiptStatuses.includes(receiptDetail.head.docStatus)" type="danger" plain
+          :loading="deletingReceiptId === receiptDetail.head.id"
+          @click="removeReceipt({ ...receiptDetail.head, totalAmount: receiptDetail.head.totalAmount || 0 })">删除</el-button>
       </template>
     </el-dialog>
 
     <!-- 红冲影响清单确认对话框 / 成本调整对话框(M1-7,components/doc) -->
-    <RedFlushDialog v-model="redFlushVisible" :doc-id="reverseDocId" @done="afterReverse" />
+    <RedFlushDialog v-model="redFlushVisible" :doc-id="reverseDocId" delete-receipt @done="afterReverse" />
     <CostAdjustDialog
       v-model="costAdjustVisible" :doc-id="reverseDocId"
       :product-names="reverseProductNames" @done="afterReverse"
@@ -882,6 +914,14 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.receipt-list-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 4px 0 8px;
+}
+
 .flow-strip {
   display: flex;
   align-items: stretch;

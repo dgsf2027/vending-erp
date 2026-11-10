@@ -141,6 +141,13 @@ public class PurchaseController {
         return R.ok(receiptService.receiptDetail(docId));
     }
 
+    @ApiOperation("删除未入库的采购单据：草稿/待确认转作废，保留记录且不改变库存")
+    @DeleteMapping("/receipts/{docId}")
+    public R<Void> deleteReceipt(@PathVariable Long docId) {
+        receiptService.deleteDraft(docId, UID);
+        return R.ok();
+    }
+
     @ApiOperation("确认入库:自动过账库存+回写订货单已收量;重复确认被状态机拒绝")
     @PostMapping("/receipts/{docId}/confirm")
     public R<Map<String, Object>> confirmReceipt(@PathVariable Long docId) {

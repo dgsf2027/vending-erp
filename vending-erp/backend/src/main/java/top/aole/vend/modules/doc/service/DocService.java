@@ -35,7 +35,7 @@ import java.util.stream.Collectors;
  * 通用单据服务:doc_head + doc_item 的创建/查询/状态流转/确认过账。
  *
  * 硬规则:
- * 1. 单据不许删——本服务(及全系统)没有 delete 方法,只有红冲/作废两条逆向路。
+ * 1. 单据不物理删除——页面删除入口调用作废或红冲，保留单据与审计记录。
  * 2. 草稿态可改,已确认(含之后所有状态)不可改,改则抛异常。
  * 3. 确认动作 = 记 confirm_by/confirm_at + 写 op_log + 同步派发 DocConfirmedEvent
  *    (库存引擎唯一写入触发源,过账失败整体回滚)。
