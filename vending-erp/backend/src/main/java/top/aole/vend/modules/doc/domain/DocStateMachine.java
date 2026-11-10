@@ -22,7 +22,7 @@ import static top.aole.vend.modules.doc.domain.enums.DocStatus.*;
  * 采购入库追加(M3 应付环节):已确认 → 待结算 → 已结算 → 已完成
  * 出库上架追加(P0-4 预挂单):待确认 → 预挂单;预挂单 → 已确认(超48h转正) / 已作废(被导入单冲抵)
  *
- * 硬规则:单据不许删(全系统无 delete 入口);已确认后唯一出路=完成或红冲。
+ * 硬规则:单据不物理删除(删除入口走作废/红冲);已确认后唯一出路=完成或红冲。
  */
 public final class DocStateMachine {
 

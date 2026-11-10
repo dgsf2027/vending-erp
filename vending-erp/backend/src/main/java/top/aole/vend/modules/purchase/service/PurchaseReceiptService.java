@@ -99,6 +99,20 @@ public class PurchaseReceiptService {
         docService.updateDraft(docId, toDocReq(req), userId);
     }
 
+    /** 删除未入库单据：转为作废并保留记录，不产生库存流水；已过账单据必须经红冲影响确认。 */
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteDraft(Long docId, Long userId) {
+        DocHead head = docService.getDoc(docId).getHead();
+        if (head.getDocType() != DocType.PURCHASE_IN) {
+            throw new BizException("单据[" + head.getDocNo() + "]不是采购入库单");
+        }
+        if (head.getDocStatus() != DocStatus.DRAFT && head.getDocStatus() != DocStatus.PENDING_CONFIRM) {
+            throw new BizException("仅草稿或待确认的入库单可直接删除；已入库单据请查看删除影响后撤销入库");
+        }
+        // voidDoc 再次检查状态并通过条件更新防止与确认入库并发，审计日志及明细仍保留。
+        docService.voidDoc(docId, userId);
+    }
+
     /**
      * 确认入库:草稿先自动提交,再确认。
      * 确认动作触发(同事务):库存过账(stock)+ qty_received 回写与订单状态更新(listener)+ 进价 price_log。
