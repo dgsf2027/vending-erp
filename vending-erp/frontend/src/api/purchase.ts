@@ -316,6 +316,7 @@ export interface PurchaseWorkbookPreview {
   warnings: string[]
 }
 export interface PurchaseWorkbookDraft {
+  kind: PurchaseImportKind
   day: PurchaseWorkbookDay
   fileName: string
   sourceKey: string

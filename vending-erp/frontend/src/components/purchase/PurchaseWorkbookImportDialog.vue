@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import ProductSelect from '@/components/basedata/ProductSelect.vue'
 import { previewPurchaseWorkbook, reviewPurchaseWorkbook, purchaseWorkbookTemplate,
-  type PurchaseWorkbookPreview, type PurchaseWorkbookRow, type PurchaseWorkbookDraft } from '@/api/purchase'
-const props = defineProps<{ modelValue: boolean; savedKeys: string[] }>()
-const emit = defineEmits<{ (e: 'update:modelValue', value: boolean): void; (e: 'import', draft: PurchaseWorkbookDraft): void }>()
+  type PurchaseWorkbookPreview, type PurchaseWorkbookRow, type PurchaseWorkbookDraft, type PurchaseImportKind } from '@/api/purchase'
+const props = defineProps<{ modelValue: boolean; savedKeys: string[]; initialKind: PurchaseImportKind }>()
+const emit = defineEmits<{ (e: 'update:modelValue', value: boolean): void; (e: 'import', draft: PurchaseWorkbookDraft): void; (e: 'legacy-order'): void }>()
+const targetKind = ref<PurchaseImportKind>(props.initialKind)
+watch(() => props.modelValue, open => { if (open) targetKind.value = props.initialKind })
+const targetLabel = computed(() => targetKind.value === 'receipt' ? '入库单' : '订货单草稿')
 const input = ref<HTMLInputElement>()
 const busy = ref(false), error = ref(''), fileName = ref(''), selectedDate = ref(''), defaultDate = ref('')
 const data = ref<PurchaseWorkbookPreview | null>(null)
@@ -15,7 +18,8 @@ const manualRows = ref<number[]>([])
 const activeDay = computed(() => data.value?.days.find(d => d.bizDate === selectedDate.value))
 const activeRows = computed(() => (data.value?.rows || []).filter(r => r.bizDate === selectedDate.value))
 const visibleRows = computed(() => activeRows.value.filter(r => showAll.value || r.errors.length || r.needsConfirmation && !r.confirmed))
-const dayKey = computed(() => sourceKey.value + ':' + selectedDate.value)
+const savedKeyForDate = (date: string) => targetKind.value + ':' + sourceKey.value + ':' + date
+const dayKey = computed(() => savedKeyForDate(selectedDate.value))
 const alreadySaved = computed(() => props.savedKeys.includes(dayKey.value))
 function close() { if (!busy.value) emit('update:modelValue', false) }
 function changed(r: PurchaseWorkbookRow) { r.confirmed = false; dirty.value = true }
@@ -58,7 +62,7 @@ async function review(apply = false) {
       const day = activeDay.value
       if (!day || day.errors.length || !day.lines.length) { error.value = '这次采购还有待核对的口味、数量或日期，请先处理下方提示。'; return }
       if (alreadySaved.value) return
-      emit('import', { day, fileName: fileName.value, sourceKey: dayKey.value })
+      emit('import', { kind: targetKind.value, day, fileName: fileName.value, sourceKey: dayKey.value })
       emit('update:modelValue', false)
     } else ElMessage.success('已重新核对商品、数量和金额')
   } catch (e) { error.value = e instanceof Error ? e.message : '核对失败，请重试' }
@@ -79,11 +83,21 @@ async function download() {
   <el-dialog :model-value="modelValue" title="采购拿货表 · 汇总与销售关联" width="min(1260px, 96vw)" top="3vh"
     class="purchase-workbook-dialog" :close-on-click-modal="false" :close-on-press-escape="!busy" :show-close="!busy" :before-close="close">
     <div class="purchase-workbook" v-loading="busy">
-      <div class="intro">上传原拿货表 → 按采购日期整理 → 核对销售商品与口味 → 带入入库单确认。同一天同编码自动汇总，保留原始金额。</div>
+      <div class="intro">上传原拿货表 → 按采购日期整理 → 核对销售商品与口味 → 带入单据确认。同一天同编码自动汇总，保留原始金额。</div>
+      <div class="import-purpose">
+        <b>这批商品用于</b>
+        <el-radio-group v-model="targetKind" :disabled="busy">
+          <el-radio-button value="receipt">已收到货 · 采购入库</el-radio-button>
+          <el-radio-button value="order">尚未收到 · 订货单</el-radio-button>
+        </el-radio-group>
+        <p v-if="targetKind === 'receipt'">先核对拿货明细，再选择供应商；点击确认入库后才增加库存。</p>
+        <p v-else>只生成订货单草稿，库存不变。若这份表是已收货的拿货记录，请选择上方「采购入库」。</p>
+      </div>
       <div class="tools">
         <el-button type="primary" :disabled="busy" @click="input?.click()">{{ data ? '重新选择拿货表' : '选择拿货表' }}</el-button>
         <input ref="input" type="file" accept=".xls,.xlsx" hidden @change="upload">
         <el-button :disabled="busy" @click="download">下载同格式模板</el-button>
+        <el-button v-if="targetKind === 'order'" link :disabled="busy" @click="emit('update:modelValue', false); emit('legacy-order')">使用原三列订货模板</el-button>
         <span class="muted">{{ fileName || '支持采购日期、产品名称、商品编码、整件规格、总件数、采购数量、整件价格、总价格' }}</span>
       </div>
       <el-alert v-if="error" type="error" :closable="false" :title="error" show-icon />
@@ -95,7 +109,7 @@ async function download() {
         <div class="date-cards">
           <button v-for="day in data.days" :key="day.bizDate" type="button" :class="{ active: selectedDate === day.bizDate }" :disabled="busy" @click="selectedDate = day.bizDate">
             <b>{{ day.bizDate || '待填采购日期' }}</b><span>{{ day.sourceCount }} 行 · ¥{{ Number(day.totalAmount).toFixed(2) }}</span>
-            <small>{{ savedKeys.includes(sourceKey + ':' + day.bizDate) ? '本次已保存单据' : day.errors.length ? '有待核对项' : `可汇总为 ${day.lines.length} 种商品` }}</small>
+            <small>{{ savedKeys.includes(savedKeyForDate(day.bizDate)) ? '本次已保存单据' : day.errors.length ? '有待核对项' : `可汇总为 ${day.lines.length} 种商品` }}</small>
           </button>
         </div>
         <div class="tools" v-if="data.rows.some(r => !r.bizDate)"><span>无日期明细统一使用：</span><el-date-picker v-model="defaultDate" type="date" value-format="YYYY-MM-DD" placeholder="选择实际采购日期" /><el-button :disabled="busy" @click="review(false)">应用日期</el-button></div>
@@ -131,12 +145,12 @@ async function download() {
           </div>
           <div v-if="row.errors.length" class="warning">{{ row.errors.join('；') }}</div>
         </div>
-        <div class="tools"><b>② {{ selectedDate || '本次采购' }} 入库汇总</b><el-tag v-if="dirty" type="warning">关联已改动，点击重新核对更新汇总</el-tag></div>
+        <div class="tools"><b>② {{ selectedDate || '本次采购' }} {{ targetLabel }}汇总</b><el-tag v-if="dirty" type="warning">关联已改动，点击重新核对更新汇总</el-tag></div>
         <el-table v-if="activeDay" :data="activeDay.lines" border max-height="300" class="summary-table">
-          <el-table-column prop="skuCode" label="入库编码" width="125" />
+          <el-table-column prop="skuCode" label="商品编码" width="125" />
           <el-table-column prop="productName" label="商品名称" min-width="245" />
           <el-table-column label="原表来源" min-width="155"><template #default="{ row }">第 {{ row.sourceRows.join('、') }} 行<small class="muted block">{{ row.sourceNames.join(' / ') }}</small></template></el-table-column>
-          <el-table-column prop="qty" label="入库数量" width="105" />
+          <el-table-column prop="qty" :label="targetKind === 'receipt' ? '入库数量' : '订购数量'" width="105" />
           <el-table-column prop="unitPrice" label="折算单价" width="105" />
           <el-table-column label="原始金额" width="105"><template #default="{ row }">¥{{ Number(row.totalPrice).toFixed(2) }}</template></el-table-column>
           <template #empty><span>先确认上方商品关联，重新核对后显示汇总</span></template>
@@ -149,13 +163,17 @@ async function download() {
     <template #footer>
       <el-button :disabled="busy" @click="close">关闭</el-button>
       <el-button :disabled="busy || !data || !!parseErrors.length" @click="review(false)">重新核对</el-button>
-      <el-button type="primary" :loading="busy" :disabled="!activeDay || !!parseErrors.length || alreadySaved" @click="review(true)">带入 {{ selectedDate || '本次采购' }} 入库单</el-button>
+      <el-button type="primary" :loading="busy" :disabled="!activeDay || !!parseErrors.length || alreadySaved" @click="review(true)">带入 {{ selectedDate || '本次采购' }} {{ targetLabel }}</el-button>
     </template>
   </el-dialog>
 </template>
 
 <style scoped>
 .intro { background: #edf5f0; color: #285f49; padding: 12px 16px; border-radius: 6px; line-height: 1.7; }
+.import-purpose { padding: 12px 16px; border: 1px solid #dce4e0; border-radius: 6px; margin-top: 12px; }
+.import-purpose > b { display: inline-block; margin-right: 16px; }
+.import-purpose p { color: #52695d; margin: 10px 0 0; line-height: 1.6; }
+.import-purpose :deep(.el-radio-group) { gap: 4px; }
 .tools, .row-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 14px 0; }
 .tools .el-button { margin-left: 0; }
 .muted { color: #718078; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
