@@ -603,7 +603,7 @@ onMounted(() => {
       <h3>
         📋 订货单(可选)<span class="hint">先下单、到货再点数收货时用;超期未到亮黄灯</span>
         <span style="margin-left: auto; display: flex; gap: 8px">
-          <el-button size="small" @click="openImport('order')">表格导入（支持拿货表）</el-button>
+          <el-button size="small" @click="openImport('receipt')">表格导入（支持拿货表）</el-button>
           <el-button size="small" @click="openPoForm">＋ 新建订货单</el-button>
         </span>
       </h3>

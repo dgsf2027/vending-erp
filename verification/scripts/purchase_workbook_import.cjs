@@ -143,6 +143,8 @@ const until = async fn => { const end = Date.now() + 10000; while (!await fn()) 
 
     await page.setViewportSize({ width: 1500, height: 1000 }); await dialog.getByRole('button', { name: '关闭', exact: true }).click();
     await page.getByRole('button', { name: '表格导入（支持拿货表）', exact: true }).click(); await dialog.waitFor();
+    assert.equal(await dialog.getByRole('radio', { name: '已收到货 · 采购入库', exact: true }).isChecked(), true);
+    await dialog.getByText('尚未收到 · 订货单', { exact: true }).click();
     assert.equal(await dialog.getByRole('radio', { name: '尚未收到 · 订货单', exact: true }).isChecked(), true);
     await dialog.locator('input[type=file]').setInputFiles({ name: '元气森林拿货_已匹配统一商品编码.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from('mocked') });
     await dialog.getByText('5 行明细 · 3 次采购', { exact: true }).waitFor(); assert.equal(workbookUploads, 2); assert.equal(legacyUploads, 0);
@@ -160,6 +162,7 @@ const until = async fn => { const end = Date.now() + 10000; while (!await fn()) 
     passed.push('lower order entry reads original multi-date workbook, merges rows and explicitly saves an order draft without receiving or placing stock');
 
     await page.getByRole('button', { name: '表格导入（支持拿货表）', exact: true }).click();
+    await dialog.getByText('尚未收到 · 订货单', { exact: true }).click();
     assert.equal(await dialog.getByRole('button', { name: '带入 2026-10-26 订货单草稿', exact: true }).isEnabled(), false);
     await dialog.getByText('已收到货 · 采购入库', { exact: true }).click();
     assert.equal(await dialog.getByRole('radio', { name: '已收到货 · 采购入库', exact: true }).isChecked(), true);
@@ -169,6 +172,7 @@ const until = async fn => { const end = Date.now() + 10000; while (!await fn()) 
     passed.push('wrong entrance can switch to receiving without reuploading, with correct source date and amount');
 
     await page.getByRole('button', { name: '表格导入（支持拿货表）', exact: true }).click();
+    await dialog.getByText('尚未收到 · 订货单', { exact: true }).click();
     await dialog.getByRole('button', { name: '使用原三列订货模板', exact: true }).click();
     const legacy = page.getByRole('dialog', { name: '订货单 · 列表导入', exact: true }); await legacy.waitFor();
     await legacy.locator('input[type=file]').setInputFiles({ name: '三列订货表.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from('mocked') });
