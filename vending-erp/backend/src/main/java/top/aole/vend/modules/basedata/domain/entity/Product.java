@@ -22,6 +22,13 @@ public class Product extends BaseEntity {
     /** 老账原编码(一码多品清洗留痕) */
     private String legacyCode;
 
+    /** 共用库存的原口味档案保留，不能再单独记库存。 */
+    @com.fasterxml.jackson.annotation.JsonProperty(access = com.fasterxml.jackson.annotation.JsonProperty.Access.READ_ONLY)
+    private Long stockOwnerId;
+
+    @com.fasterxml.jackson.annotation.JsonProperty(access = com.fasterxml.jackson.annotation.JsonProperty.Access.READ_ONLY)
+    private Boolean sharedStock;
+
     /** 采购商品名(主名称) */
     private String productName;
 

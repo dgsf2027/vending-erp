@@ -84,6 +84,7 @@ public class StocktakeService {
     private final StocktakeItemMapper itemMapper;
     private final StocktakeQueryMapper queryMapper;
     private final ProductMapper productMapper;
+    private final top.aole.vend.modules.basedata.application.ProductCodeService productCodes;
     private final MachineMapper machineMapper;
     private final SlotMapper slotMapper;
     private final StockService stockService;
@@ -98,6 +99,7 @@ public class StocktakeService {
     /** 新建盘点单:按范围全量快照账面数(actual 默认=book → 未录=视同相符) */
     @Transactional(rollbackFor = Exception.class)
     public Long create(CreateReq req, Long userId) {
+        productCodes.lock();
         String scope = req.getScopeType();
         if (!Stocktake.SCOPE_WAREHOUSE.equals(scope) && !Stocktake.SCOPE_MACHINE.equals(scope)) {
             throw new BizException("盘点范围只能是 仓库/机器:" + scope);
@@ -138,7 +140,7 @@ public class StocktakeService {
         Map<Long, String> slotOf = new LinkedHashMap<>();
         if (Stocktake.SCOPE_WAREHOUSE.equals(scope)) {
             List<Long> productIds = productMapper.selectList(new LambdaQueryWrapper<Product>()
-                            .select(Product::getId).orderByAsc(Product::getId))
+                            .isNull(Product::getStockOwnerId).select(Product::getId).orderByAsc(Product::getId))
                     .stream().map(Product::getId).collect(Collectors.toList());
             // 旧版口径:账面结存 = 台账期末结存(一本账),与库存页「仓库」列同一个数;
             // 不再用 Σ仓库流水(没导补货记录时它只涨不跌,账面全是虚高)

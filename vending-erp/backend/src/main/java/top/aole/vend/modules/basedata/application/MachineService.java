@@ -184,6 +184,7 @@ public class MachineService {
             throw new BizException("非法货道状态:" + req.getSlotStatus() + ",只允许 正常/停用/故障");
         }
         if (req.getProductId() != null && req.getProductId() > 0) {
+            productService.assertIndependent(java.util.Collections.singletonList(req.getProductId()));
             productService.getById(req.getProductId()); // 绑定前校验商品存在
         }
         LambdaUpdateWrapper<Slot> uw = new LambdaUpdateWrapper<Slot>().eq(Slot::getId, slotId);

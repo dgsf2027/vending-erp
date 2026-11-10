@@ -79,6 +79,7 @@ public class DocService {
      */
     @Transactional(rollbackFor = Exception.class)
     public Long createDocWithSource(DocCreateReq req, Long userId, String docSource) {
+        productService.assertIndependent(req.getItems().stream().map(DocItemReq::getProductId).collect(Collectors.toList()));
         if (req.getDocType().isTransfer() && req.getMachineId() == null) {
             throw new BizException("转移类单据(" + req.getDocType().getLabel() + ")必须关联机器");
         }
@@ -116,6 +117,7 @@ public class DocService {
     /** 修改草稿:仅草稿态允许;已确认(及之后)一律抛异常 */
     @Transactional(rollbackFor = Exception.class)
     public void updateDraft(Long docId, DocCreateReq req, Long userId) {
+        productService.assertIndependent(req.getItems().stream().map(DocItemReq::getProductId).collect(Collectors.toList()));
         DocHead head = mustGet(docId);
         if (head.getDocStatus() != DocStatus.DRAFT) {
             throw new BizException(String.format("单据[%s]当前状态为[%s],仅草稿态可修改;已确认单据只能红冲",

@@ -34,11 +34,14 @@ public class ProductDeletionService {
 
     @Transactional(rollbackFor = Exception.class)
     public void delete(Long id, String operator) {
+        productService.assertIndependent(java.util.Collections.singletonList(id));
         // 先锁定商品,防止重复删除;表名来自固定清单,商品 ID 始终以参数传入。
         List<Long> locked = jdbc.queryForList(
                 "SELECT id FROM yc_vend_product WHERE id=? AND is_deleted=0 FOR UPDATE", Long.class, id);
         if (locked.isEmpty()) throw new BizException("商品不存在或已删除");
         Product before = productService.getById(id);
+        if (before.getStockOwnerId() != null || Boolean.TRUE.equals(before.getSharedStock()))
+            throw new BizException("此商品保留共用库存对应关系，不能删除");
         for (String[] reference : REFERENCES) {
             // 已归档/红冲/软删的业务行也保护,不让历史记录失去商品信息。
             Integer count = jdbc.queryForObject("SELECT COUNT(*) FROM " + reference[0] + " WHERE product_id=?",

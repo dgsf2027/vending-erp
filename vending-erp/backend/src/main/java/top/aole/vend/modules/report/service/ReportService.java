@@ -340,7 +340,7 @@ public class ReportService {
         }
 
         List<Product> products = productMapper.selectList(
-                new LambdaQueryWrapper<Product>().orderByAsc(Product::getSkuCode));
+                new LambdaQueryWrapper<Product>().isNull(Product::getStockOwnerId).orderByAsc(Product::getSkuCode));
         BigDecimal warehouseAmount = BigDecimal.ZERO;
         BigDecimal machineAmount = BigDecimal.ZERO;
         int negativeCount = 0;

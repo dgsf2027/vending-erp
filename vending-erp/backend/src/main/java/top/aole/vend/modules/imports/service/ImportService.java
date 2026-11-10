@@ -90,6 +90,7 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class ImportService {
+    private final top.aole.vend.modules.basedata.application.ProductCodeService productCodes;
 
     /** 导入操作系统用户占位(SSO 接入后换真实 userId) */
     public static final Long IMPORT_USER = 1L;
@@ -525,6 +526,7 @@ public class ImportService {
      */
     @Transactional(rollbackFor = Exception.class, isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public CommitResp confirm(String token, String operator) {
+        productCodes.lock();
         PendingUpload pending = pendingUploads.remove(token);
         if (pending == null) {
             throw new BizException("上传凭据已失效(服务重启或已确认过),请重新上传预览");
