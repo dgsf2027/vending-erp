@@ -24,9 +24,9 @@ public class ProductCatalogMatcher {
     private final Map<Long, Product> byId;
 
     public ProductCatalogMatcher(List<Product> products, List<SkuAlias> aliases) {
-        this.products = products;
+        this.products = products.stream().filter(p -> p.getStockOwnerId() == null).collect(Collectors.toList());
         this.aliases = aliases;
-        this.byId = products.stream().collect(Collectors.toMap(Product::getId, p -> p));
+        this.byId = this.products.stream().collect(Collectors.toMap(Product::getId, p -> p));
     }
 
     public void resolve(Row row) {

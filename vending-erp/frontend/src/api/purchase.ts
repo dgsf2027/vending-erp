@@ -332,6 +332,23 @@ export function purchaseWorkbookTemplate(): Promise<Blob> {
   return request.get('/v1/purchase/import/receipt/workbook/template', { responseType: 'blob' })
 }
 
+export interface PurchaseStockGroup {
+  key: string; name: string; targetId: number; members: PurchaseWorkbookRow['candidates']; sourceRows: number[]
+}
+export interface PurchaseStockChoice { key: string; targetId: number; memberIds: number[]; confirmed: boolean }
+export interface PurchaseSimplePreview {
+  batchKey: string; preview: PurchaseWorkbookPreview; groups: PurchaseStockGroup[]; receiptIds: number[]
+}
+export function previewSimplePurchase(file: File): Promise<PurchaseSimplePreview> {
+  const data = new FormData(); data.append('file', file)
+  return request.post('/v1/purchase/import/receipt/workbook/simple-preview', data, { timeout: 120000 })
+}
+export function commitSimplePurchase(data: {
+  batchKey: string; supplierId: number; defaultDate?: string; groups: PurchaseStockChoice[]; rows: { rowNo: number; productId: number }[]
+}): Promise<{ receiptIds: number[]; alreadyImported: boolean }> {
+  return request.post('/v1/purchase/import/receipt/workbook/commit', data, { timeout: 120000 })
+}
+
 export interface PurchasePhotoCandidate {
   productId: number
   productName: string

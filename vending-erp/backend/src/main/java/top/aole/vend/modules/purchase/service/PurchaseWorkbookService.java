@@ -87,7 +87,7 @@ public class PurchaseWorkbookService {
 
     public Preview review(List<SourceRow> input, String defaultDate) {
         if (input == null || input.isEmpty() || input.size() > 500) throw new BizException("请提供 1 至 500 行拿货明细");
-        List<Product> catalog = products.selectList(null);
+        List<Product> catalog = products.selectList(null).stream().filter(p -> p.getStockOwnerId() == null).collect(Collectors.toList());
         List<SkuAlias> aliasList = aliases.selectList(null);
         List<SaleSummary> saleList = sales.summaries();
         Map<Long, Product> byId = catalog.stream().collect(Collectors.toMap(Product::getId, p -> p));
@@ -134,11 +134,14 @@ public class PurchaseWorkbookService {
     }
 
     private void resolve(SourceRow r, List<Product> catalog, List<SkuAlias> aliasList, List<SaleSummary> saleList) {
-        Product coded = catalog.stream().filter(p -> !r.getSkuCode().isEmpty() && r.getSkuCode().equalsIgnoreCase(p.getSkuCode())).findFirst().orElse(null);
+        Set<Long> codeAliases = aliasList.stream().filter(a -> !r.getSkuCode().isEmpty() && r.getSkuCode().equalsIgnoreCase(a.getAliasCode())).map(SkuAlias::getProductId).collect(Collectors.toSet());
+        Product coded = catalog.stream().filter(p -> !r.getSkuCode().isEmpty() && (r.getSkuCode().equalsIgnoreCase(p.getSkuCode()) || Boolean.TRUE.equals(p.getSharedStock()) && codeAliases.size() == 1 && codeAliases.contains(p.getId()))).findFirst().orElse(null);
         String name = norm(r.getSourceName()), hint = norm(r.getHint());
         Set<Long> exact = catalog.stream().filter(p -> !name.isEmpty() && (name.equals(norm(p.getProductName())) || hint.equals(norm(p.getProductName()))))
             .map(Product::getId).collect(Collectors.toSet());
         aliasList.stream().filter(a -> !name.isEmpty() && name.equals(norm(a.getAliasName()))).forEach(a -> exact.add(a.getProductId()));
+        // 已确认的通用拿货名称沿用共用库存；新的明确口味仍须确认。
+        if (flavors(r.getSourceName()).isEmpty()) catalog.stream().filter(p -> Boolean.TRUE.equals(p.getSharedStock()) && sameFamily(r.getSourceName(), p.getProductName())).forEach(p -> exact.add(p.getId()));
         List<Product> possible = catalog.stream().filter(p -> p == coded || exact.contains(p.getId())
             || r.getAllocations() != null && r.getAllocations().stream().anyMatch(a -> a != null && p.getId().equals(a.getProductId()))
             || sameFamily(r.getSourceName(), p.getProductName()) || r.getHint().contains(p.getSkuCode())
@@ -163,7 +166,7 @@ public class PurchaseWorkbookService {
                 r.setSuggestedProductId(best.getId());
         }
         boolean multipleFlavors = possible.stream().filter(p -> sameFamily(r.getSourceName(), p.getProductName())).count() > 1;
-        boolean flavorConflict = coded != null && !flavors(coded.getProductName()).containsAll(flavors(r.getSourceName()));
+        boolean flavorConflict = coded != null && !(Boolean.TRUE.equals(coded.getSharedStock()) && exact.contains(coded.getId())) && !flavors(coded.getProductName()).containsAll(flavors(r.getSourceName()));
         boolean sizeConflict = coded != null && ProductCatalogMatcher.conflictingSize(r.getSourceName(), coded.getProductName());
         boolean genericFlavor = coded != null && multipleFlavors && flavors(r.getSourceName()).isEmpty() && !exact.contains(coded.getId());
         r.setNeedsConfirmation(coded == null && unique == null || flavorConflict || genericFlavor || sizeConflict
@@ -237,7 +240,7 @@ public class PurchaseWorkbookService {
             default: return null;
         }
     }
-    private static boolean sameFamily(String a, String b) {
+    static boolean sameFamily(String a, String b) {
         String x = norm(a), y = norm(b);
         for (String family : new String[]{"电解质水", "气泡水", "维c水"}) {
             String source = x.replace("气泡橙水", "气泡水");

@@ -44,6 +44,7 @@ public class ProductService {
     public Page<Product> page(long current, long size, String keyword, String category, String productStatus,
                               String sortBy, String sortOrder) {
         QueryWrapper<Product> qw = new QueryWrapper<>();
+        qw.isNull("stock_owner_id");
         if (StrUtil.isNotBlank(keyword)) {
             qw.and(w -> w.like("product_name", keyword)
                     .or().like("sku_code", keyword)
@@ -111,6 +112,7 @@ public class ProductService {
     public Product update(Long id, Product incoming, String operator) {
         productCodeService.lock();
         Product before = getById(id);
+        if (before.getStockOwnerId() != null) throw new BizException("此口味已共用库存，请编辑对应的库存商品");
         if (StrUtil.isNotBlank(incoming.getSkuCode()) && !incoming.getSkuCode().equals(before.getSkuCode())) {
             throw new BizException("SKU 编码不允许修改(需要拆分请走一码多品清洗流程)");
         }
@@ -133,10 +135,12 @@ public class ProductService {
      */
     @Transactional(rollbackFor = Exception.class)
     public Product changeStatus(Long id, String targetStatus, String operator) {
+        productCodeService.lock();
         if (!PRODUCT_STATUSES.contains(targetStatus)) {
             throw new BizException("非法商品状态:" + targetStatus + ",只允许 在售/清仓中/停售");
         }
         Product before = getById(id);
+        if (before.getStockOwnerId() != null) throw new BizException("此口味已共用库存，不能恢复为独立库存商品");
         if (targetStatus.equals(before.getProductStatus())) {
             return before;
         }
@@ -158,6 +162,7 @@ public class ProductService {
         if (productIds == null || productIds.isEmpty()) {
             return;
         }
+        assertIndependent(productIds);
         List<Product> blocked = productMapper.selectList(new LambdaQueryWrapper<Product>()
                 .in(Product::getId, productIds)
                 .eq(Product::getProductStatus, "清仓中"));
@@ -167,6 +172,15 @@ public class ProductService {
                     .collect(java.util.stream.Collectors.joining("、"));
             throw new BizException("清仓中商品禁止采购(P2-10):" + names
                     + "。如需恢复进货,请先在商品档案改回\"在售\"");
+        }
+    }
+
+    /** 与共用库存确认使用相同锁，过期页面不能再给原口味建立独立账。 */
+    public void assertIndependent(java.util.Collection<Long> ids) {
+        productCodeService.lock();
+        if (ids == null || ids.isEmpty()) return;
+        for (Product p : productMapper.selectBatchIds(ids)) {
+            if (p.getStockOwnerId() != null) throw new BizException(p.getProductName() + " 已共用库存，请刷新后选择对应库存商品");
         }
     }
 

@@ -536,10 +536,10 @@ onMounted(() => {
     <div class="ledger-crumb">园区小卖 ERP / 采购</div>
     <div class="ledger-title">
       <h2>采购 · 订货与入库</h2>
-      <span class="sub">拍照识别、按表格导入或直接录入；逐行核对后再确认入库</span>
+      <span class="sub">上传拿货表，正常商品自动匹配，确认口味后直接入库</span>
     </div>
     <p class="ledger-note">
-      手写拿货单可点<b>「拍照识别」</b>逐行核对并生成草稿；采购表格可点<b>「按表格导入」</b>；也可<b>「直接录入库」</b>手填。确认入库后，库存和成本才会更新。先下单再收货，可用下方的<b>订货单</b>。
+      采购表格点<b>「按表格导入」</b>，选择供应商、确认口味共用库存后整表入库；手写单可用<b>「拍照识别」</b>，也可<b>「直接录入库」</b>手填。尚未收货时使用下方的<b>订货单</b>。
     </p>
 
     <!-- 编号流程条(设计七律#2) -->
@@ -873,7 +873,7 @@ onMounted(() => {
     />
 
     <PurchaseImportDialog v-model="importVisible" :kind="importKind" @import="applyImport" />
-    <PurchaseWorkbookImportDialog v-model="workbookVisible" :saved-keys="workbookSavedKeys" :initial-kind="importKind" @import="applyWorkbook" @legacy-order="importKind = 'order'; importVisible = true" />
+    <PurchaseWorkbookImportDialog v-model="workbookVisible" :saved-keys="workbookSavedKeys" :initial-kind="importKind" :suppliers="suppliers" @completed="refreshAll" @import="applyWorkbook" @legacy-order="importKind = 'order'; importVisible = true" />
     <PurchasePhotoImportDialog v-model="photoImportVisible" :suppliers="suppliers" @import="applyPhotoImport" />
 
     <!-- 通用单据详情抽屉(P2-3:入库单号点开即达) -->

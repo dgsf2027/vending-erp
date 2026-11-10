@@ -52,6 +52,7 @@ public class StockService {
     private final DocStatusGuard docStatusGuard;
     private final OpLogService opLogService;
     private final StockLedgerWriter ledgerWriter;
+    private final top.aole.vend.modules.basedata.application.ProductService productService;
 
     // ============================== 仓库库存 ==============================
 
@@ -129,6 +130,7 @@ public class StockService {
     public Long recordMachineSnapshot(Long machineId, Long productId, String slotNo,
                                       BigDecimal qty, String source, LocalDateTime snapshotTime,
                                       Long userId, Long importBatchId) {
+        productService.assertIndependent(Collections.singletonList(productId));
         MachineStockSnapshot snap = new MachineStockSnapshot();
         snap.setMachineId(machineId);
         snap.setProductId(productId);

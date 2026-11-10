@@ -53,6 +53,7 @@ public class AliasService {
             throw new BizException("后台商品编号与条码至少填一个(不允许按名称绑定)");
         }
         productService.getById(req.getProductId());
+        productService.assertIndependent(java.util.Collections.singletonList(req.getProductId()));
 
         SkuAlias existing = skuAliasMapper.selectOne(new LambdaQueryWrapper<SkuAlias>()
                 .eq(SkuAlias::getAliasCode, aliasCode)

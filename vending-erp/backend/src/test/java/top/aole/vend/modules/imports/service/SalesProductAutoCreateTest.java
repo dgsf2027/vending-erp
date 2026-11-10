@@ -110,7 +110,7 @@ class SalesProductAutoCreateTest {
         machines = mock(MachineMapper.class);
         Machine machine = new Machine(); machine.setId(1L); machine.setDeviceId("D");
         when(machines.selectList(any())).thenReturn(Collections.singletonList(machine));
-        service = new ImportService(new ExcelParser(),new AliasMatcher(am,pending),new SalesProductService(pm,am,products,aliases,codes),
+        service = new ImportService(codes,new ExcelParser(),new AliasMatcher(am,pending),new SalesProductService(pm,am,products,aliases,codes),
             aliases,mock(DocService.class),mock(StockService.class),mock(SettleBillService.class),mock(OpLogService.class),mock(PrekitService.class),
             bm,mock(ImportErrorMapper.class),queries,sales,machines,pm,mock(PriceLogMapper.class),mock(DocHeadMapper.class),
             mock(StockLedgerMapper.class),mock(MachineStockSnapshotMapper.class));
