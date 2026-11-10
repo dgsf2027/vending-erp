@@ -36,7 +36,8 @@ const evaluate = input => {
   }
   return { rows, days, skippedSubtotals: 3, errors: [], warnings: [] };
 };
-const passed = [], errors = [], writes = [], creates = [], updates = [], confirms = [];
+const passed = [], errors = [], writes = [], creates = [], updates = [], confirms = [], orderCreates = [], orderPlaces = [];
+let workbookUploads = 0, legacyUploads = 0;
 let nextId = 1, failConfirmation = true;
 const documents = new Map();
 const ok = (route, data) => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 200, data }) });
@@ -49,9 +50,16 @@ const until = async fn => { const end = Date.now() + 10000; while (!await fn()) 
   await page.route('**/api/**', async route => {
     const request = route.request(), url = new URL(request.url()), p = url.pathname;
     if (!p.startsWith('/api/')) return route.continue();
-    if (p.endsWith('/receipt/workbook/preview')) return ok(route, evaluate(source));
+    if (p.endsWith('/receipt/workbook/preview')) { workbookUploads++; return ok(route, evaluate(source)); }
     if (p.endsWith('/receipt/workbook/review')) return ok(route, evaluate(request.postDataJSON().rows));
     if (p.endsWith('/receipt/workbook/template')) { assert.equal(request.headers().authorization, 'Bearer purchase-workbook-qa'); return route.fulfill({ contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', body: Buffer.from('PK-mocked-template') }); }
+    if (p.endsWith('/import/order/preview')) { legacyUploads++; return ok(route, { rows: [{ rowNo: 2, productId: 15, skuCode: 'YQ000015', productName: catalog[0].productName, qty: 15, unitPrice: null }], errors: [] }); }
+    if (p.endsWith('/purchase/orders') && request.method() === 'POST') { orderCreates.push(request.postDataJSON()); return ok(route, 100 + orderCreates.length); }
+    if (/\/purchase\/orders\/\d+\/place$/.test(p)) {
+      orderPlaces.push(p);
+      if (orderPlaces.length === 1) return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 500, message: '模拟下单失败，可重试' }) });
+      return ok(route, null);
+    }
     if (p.endsWith('/purchase/receipts') && request.method() === 'POST') {
       const body = request.postDataJSON(); creates.push(body);
       const id = nextId++, doc = { head: { ...body, id, docNo: `QA-${id}`, docStatus: '草稿', totalAmount: body.items.reduce((s, r) => s + (r.amount ?? r.qty * r.unitPrice), 0) }, items: body.items };
@@ -132,6 +140,51 @@ const until = async fn => { const end = Date.now() + 10000; while (!await fn()) 
     assert.equal(await dialog.evaluate(el => el.scrollWidth > el.clientWidth + 1), false);
     assert.deepEqual(errors, []); assert.deepEqual(writes, []);
     passed.push('mobile preview and footer fit viewport; no browser errors or unexpected writes');
+
+    await page.setViewportSize({ width: 1500, height: 1000 }); await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+    await page.getByRole('button', { name: '表格导入（支持拿货表）', exact: true }).click(); await dialog.waitFor();
+    assert.equal(await dialog.getByRole('radio', { name: '已收到货 · 采购入库', exact: true }).isChecked(), true);
+    await dialog.getByText('尚未收到 · 订货单', { exact: true }).click();
+    assert.equal(await dialog.getByRole('radio', { name: '尚未收到 · 订货单', exact: true }).isChecked(), true);
+    await dialog.locator('input[type=file]').setInputFiles({ name: '元气森林拿货_已匹配统一商品编码.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from('mocked') });
+    await dialog.getByText('5 行明细 · 3 次采购', { exact: true }).waitFor(); assert.equal(workbookUploads, 2); assert.equal(legacyUploads, 0);
+    await dialog.locator('.date-cards button').filter({ hasText: '2026-10-26' }).click();
+    await page.screenshot({ path: path.join(out, 'order-entry-workbook.png'), animations: 'disabled' });
+    await dialog.getByRole('button', { name: '带入 2026-10-26 订货单草稿', exact: true }).click();
+    const po = page.getByRole('dialog', { name: /新建订货单/ }); await po.waitFor();
+    assert.equal(await po.getByRole('checkbox', { name: /保存后立即下单/ }).isChecked(), false);
+    assert.equal(await po.getByPlaceholder('选日期', { exact: true }).inputValue(), '');
+    await po.locator('.el-select').first().click(); await page.getByRole('option', { name: '测试供应商', exact: true }).click();
+    await po.getByRole('button', { name: '保存订货单', exact: true }).click(); await po.waitFor({ state: 'hidden' });
+    assert.equal(orderCreates.length, 1); assert.equal(orderPlaces.length, 0); assert.equal(creates.length, 2);
+    assert.deepEqual(orderCreates[0].items, [{ productId: 15, qtyOrdered: 105, unitPrice: 3.3333 }]); assert.equal(orderCreates[0].expectDate, null);
+    assert.match(orderCreates[0].remark, /原表采购日期 2026-10-26.*原表金额 ¥350\.00/);
+    passed.push('lower order entry reads original multi-date workbook, merges rows and explicitly saves an order draft without receiving or placing stock');
+
+    await page.getByRole('button', { name: '表格导入（支持拿货表）', exact: true }).click();
+    await dialog.getByText('尚未收到 · 订货单', { exact: true }).click();
+    assert.equal(await dialog.getByRole('button', { name: '带入 2026-10-26 订货单草稿', exact: true }).isEnabled(), false);
+    await dialog.getByText('已收到货 · 采购入库', { exact: true }).click();
+    assert.equal(await dialog.getByRole('radio', { name: '已收到货 · 采购入库', exact: true }).isChecked(), true);
+    await dialog.getByRole('button', { name: '带入 2026-10-26 入库单', exact: true }).click(); await receipt.waitFor();
+    assert.ok((await receipt.textContent()).includes('350.00')); await receipt.getByRole('button', { name: '关闭', exact: true }).click();
+    assert.equal(workbookUploads, 2); assert.equal(creates.length, 2);
+    passed.push('wrong entrance can switch to receiving without reuploading, with correct source date and amount');
+
+    await page.getByRole('button', { name: '表格导入（支持拿货表）', exact: true }).click();
+    await dialog.getByText('尚未收到 · 订货单', { exact: true }).click();
+    await dialog.getByRole('button', { name: '使用原三列订货模板', exact: true }).click();
+    const legacy = page.getByRole('dialog', { name: '订货单 · 列表导入', exact: true }); await legacy.waitFor();
+    await legacy.locator('input[type=file]').setInputFiles({ name: '三列订货表.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from('mocked') });
+    await legacy.getByRole('button', { name: '导入明细并核对', exact: true }).click(); await po.waitFor();
+    assert.equal(legacyUploads, 1); assert.equal(await po.getByRole('checkbox', { name: /保存后立即下单/ }).isChecked(), false);
+    await po.locator('.el-select').first().click(); await page.getByRole('option', { name: '测试供应商', exact: true }).click();
+    await po.locator('label.el-checkbox').filter({ hasText: '保存后立即下单' }).click(); await po.getByRole('button', { name: '保存订货单', exact: true }).click();
+    await po.getByRole('button', { name: '重试下单', exact: true }).waitFor();
+    await po.getByRole('button', { name: '重试下单', exact: true }).click(); await po.waitFor({ state: 'hidden' });
+    assert.equal(orderCreates.length, 2); assert.deepEqual(orderPlaces, ['/api/v1/purchase/orders/102/place', '/api/v1/purchase/orders/102/place']);
+    assert.equal(orderCreates[1].items[0].unitPrice, null); assert.deepEqual(errors, []); assert.deepEqual(writes, []);
+    passed.push('legacy three-column orders with optional price remain supported; failed placement retries original draft without duplicate creation');
     console.log(JSON.stringify({ passed }, null, 2));
   } catch (e) { await page.screenshot({ path: path.join(out, 'failure.png'), animations: 'disabled', fullPage: true }); console.error(e); console.error({ errors, writes }); process.exitCode = 1; }
   finally { await browser.close(); }

@@ -34,10 +34,17 @@ const photoImportVisible = ref(false)
 const importKind = ref<PurchaseImportKind>('receipt')
 function openImport(kind: PurchaseImportKind) {
   importKind.value = kind
-  if (kind === 'receipt') { workbookVisible.value = true; return }
-  importVisible.value = true
+  workbookVisible.value = true
 }
 function applyWorkbook(draft: PurchaseWorkbookDraft) {
+  if (draft.kind === 'order') {
+    openPoForm()
+    poWorkbookSourceKey.value = draft.sourceKey
+    poForm.placeNow = false
+    poForm.remark = `拿货表：${draft.fileName} · 原表采购日期 ${draft.day.bizDate} · 原表金额 ¥${Number(draft.day.totalAmount).toFixed(2)} · 已核对销售商品关联`
+    poForm.items = draft.day.lines.map(line => ({ productId: line.productId, qtyOrdered: Number(line.qty), unitPrice: Number(line.unitPrice), hint: null }))
+    return
+  }
   quickReceive()
   workbookSourceKey.value = draft.sourceKey
   receiveForm.bizDate = draft.day.bizDate
@@ -188,6 +195,9 @@ interface PoFormItem {
 }
 
 const poFormVisible = ref(false)
+const poSaving = ref(false)
+const poDraftId = ref<number | null>(null)
+const poWorkbookSourceKey = ref('')
 const poForm = reactive({
   supplierId: null as number | null,
   expectDate: '' as string,
@@ -197,6 +207,8 @@ const poForm = reactive({
 })
 
 function openPoForm() {
+  poDraftId.value = null
+  poWorkbookSourceKey.value = ''
   poForm.supplierId = null
   poForm.expectDate = ''
   poForm.remark = ''
@@ -210,19 +222,28 @@ function addPoItem() {
 }
 
 async function savePoForm() {
+  if (poSaving.value) return
   if (!poForm.supplierId) return ElMessage.warning('请选择供应商')
-  const items = poForm.items.filter((i) => i.productId && i.qtyOrdered)
-  if (!items.length) return ElMessage.warning('至少填一行商品+数量')
-  const id = await createPurchaseOrder({
-    supplierId: poForm.supplierId,
-    expectDate: poForm.expectDate || null,
-    remark: poForm.remark || null,
-    items: items.map((i) => ({ productId: i.productId!, qtyOrdered: i.qtyOrdered!, unitPrice: i.unitPrice })),
-  })
-  if (poForm.placeNow) await placePurchaseOrder(id)
-  ElMessage.success(poForm.placeNow ? '订货单已下单(计入在途)' : '订货单已存草稿')
-  poFormVisible.value = false
-  refreshAll()
+  const items = poForm.items
+  if (!items.length || items.some(i => !i.productId || !Number.isFinite(Number(i.qtyOrdered)) || Number(i.qtyOrdered) <= 0))
+    return ElMessage.warning('请补齐每一行的商品和订购数量，或移除空行')
+  poSaving.value = true
+  try {
+    const id = poDraftId.value ?? await createPurchaseOrder({
+      supplierId: poForm.supplierId,
+      expectDate: poForm.expectDate || null,
+      remark: poForm.remark || null,
+      items: items.map((i) => ({ productId: i.productId!, qtyOrdered: i.qtyOrdered!, unitPrice: i.unitPrice })),
+    })
+    poDraftId.value = id
+    if (poWorkbookSourceKey.value && !workbookSavedKeys.value.includes(poWorkbookSourceKey.value)) workbookSavedKeys.value.push(poWorkbookSourceKey.value)
+    if (poForm.placeNow) await placePurchaseOrder(id)
+    ElMessage.success(poForm.placeNow ? '订货单已下单(计入在途)' : '订货单已存草稿')
+    poFormVisible.value = false
+    refreshAll()
+  } catch {
+    // 请求层已提示错误；下单失败后保留草稿编号，重试不会重复建单。
+  } finally { poSaving.value = false }
 }
 
 // ============================== 比价提示(内嵌) ==============================
@@ -582,7 +603,7 @@ onMounted(() => {
       <h3>
         📋 订货单(可选)<span class="hint">先下单、到货再点数收货时用;超期未到亮黄灯</span>
         <span style="margin-left: auto; display: flex; gap: 8px">
-          <el-button size="small" @click="openImport('order')">列表导入</el-button>
+          <el-button size="small" @click="openImport('receipt')">表格导入（支持拿货表）</el-button>
           <el-button size="small" @click="openPoForm">＋ 新建订货单</el-button>
         </span>
       </h3>
@@ -658,7 +679,10 @@ onMounted(() => {
     <p class="ledger-foot-note">— 采购价历史自动从入库单聚合成「价格本」,录单时同品比价、涨幅超 20% 亮黄灯 —</p>
 
     <!-- 新建订货单 -->
-    <el-dialog v-model="poFormVisible" title="➕ 新建订货单(草稿级不进账,下单后开始计在途)" width="760px" :close-on-click-modal="false">
+    <el-dialog v-model="poFormVisible" title="➕ 新建订货单(草稿级不进账,下单后开始计在途)" width="760px" :close-on-click-modal="false" :show-close="!poSaving" :close-on-press-escape="!poSaving">
+      <el-alert v-if="poWorkbookSourceKey" type="info" :closable="false" style="margin-bottom: 12px" title="已带入原表对应日期的商品，默认仅保存订货单草稿。预计到货日请按实际计划填写；原表日期与金额保留在备注。" />
+      <el-alert v-if="poDraftId" type="warning" :closable="false" style="margin-bottom: 12px" :title="`草稿 ${poDraftId} 已保存，可重试下单；本次明细已锁定，避免重复建单。`" />
+      <el-form :disabled="poSaving || !!poDraftId">
       <div style="display: flex; gap: 14px; margin-bottom: 12px">
         <div style="flex: 1">
           <div class="mini" style="margin-bottom: 4px">供应商</div>
@@ -692,9 +716,10 @@ onMounted(() => {
         <el-input v-model="poForm.remark" placeholder="备注(可空)" style="flex: 1" />
         <el-checkbox v-model="poForm.placeNow">保存后立即下单(计入在途)</el-checkbox>
       </div>
+      </el-form>
       <template #footer>
-        <el-button @click="poFormVisible = false">取消</el-button>
-        <el-button type="primary" @click="savePoForm">保存订货单</el-button>
+        <el-button :disabled="poSaving" @click="poFormVisible = false">取消</el-button>
+        <el-button type="primary" :loading="poSaving" @click="savePoForm">{{ poDraftId ? '重试下单' : '保存订货单' }}</el-button>
       </template>
     </el-dialog>
 
@@ -848,7 +873,7 @@ onMounted(() => {
     />
 
     <PurchaseImportDialog v-model="importVisible" :kind="importKind" @import="applyImport" />
-    <PurchaseWorkbookImportDialog v-model="workbookVisible" :saved-keys="workbookSavedKeys" @import="applyWorkbook" />
+    <PurchaseWorkbookImportDialog v-model="workbookVisible" :saved-keys="workbookSavedKeys" :initial-kind="importKind" @import="applyWorkbook" @legacy-order="importKind = 'order'; importVisible = true" />
     <PurchasePhotoImportDialog v-model="photoImportVisible" :suppliers="suppliers" @import="applyPhotoImport" />
 
     <!-- 通用单据详情抽屉(P2-3:入库单号点开即达) -->
