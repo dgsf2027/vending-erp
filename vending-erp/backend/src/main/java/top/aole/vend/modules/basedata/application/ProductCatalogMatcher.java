@@ -252,12 +252,12 @@ public class ProductCatalogMatcher {
         return values;
     }
 
-    private static boolean conflictingSize(String a, String b) {
+    public static boolean conflictingSize(String a, String b) {
         Set<String> x = sizes(a), y = sizes(b);
         return !x.isEmpty() && !y.isEmpty() && !x.equals(y);
     }
 
-    private static double similarity(String a, String b) {
+    public static double similarity(String a, String b) {
         a = NORMAL_SIZE.matcher(a).replaceAll("");
         b = NORMAL_SIZE.matcher(b).replaceAll("");
         if (a.equals(b)) return 1;

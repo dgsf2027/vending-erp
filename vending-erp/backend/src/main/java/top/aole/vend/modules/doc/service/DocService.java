@@ -348,7 +348,7 @@ public class DocService {
         head.setTotalQty(items.stream().map(DocItemReq::getQty)
                 .reduce(BigDecimal.ZERO, BigDecimal::add));
         head.setTotalAmount(items.stream()
-                .map(i -> i.getQty().multiply(i.getUnitPrice() == null ? BigDecimal.ZERO : i.getUnitPrice()))
+                .map(i -> itemAmount(head, i))
                 .reduce(BigDecimal.ZERO, BigDecimal::add));
     }
 
@@ -362,7 +362,7 @@ public class DocService {
             item.setQty(req.getQty());
             item.setExpectQty(req.getExpectQty());
             item.setUnitPrice(req.getUnitPrice() == null ? BigDecimal.ZERO : req.getUnitPrice());
-            item.setAmount(item.getQty().multiply(item.getUnitPrice()));
+            item.setAmount(itemAmount(head, req));
             item.setBatchNo(req.getBatchNo());
             item.setExpireDate(req.getExpireDate());
             item.setPoItemId(req.getPoItemId());
@@ -370,6 +370,21 @@ public class DocService {
             item.setCreateUser(userId);
             docItemMapper.insert(item);
         }
+    }
+
+    private BigDecimal itemAmount(DocHead head, DocItemReq item) {
+        BigDecimal calculated = item.getQty().multiply(item.getUnitPrice() == null ? BigDecimal.ZERO : item.getUnitPrice());
+        if (item.getAmount() == null) return calculated;
+        boolean purchaseReversal = head.getDocType() == DocType.RED_FLUSH && head.getRedFlushOf() != null
+            && mustGet(head.getRedFlushOf()).getDocType() == DocType.PURCHASE_IN;
+        if (head.getDocType() != DocType.PURCHASE_IN && !purchaseReversal) throw new BizException("只有采购入库及其红冲可使用整箱原始金额");
+        BigDecimal amount = item.getAmount();
+        if (amount.signum() <= 0 || amount.stripTrailingZeros().scale() > 2 || amount.precision() - amount.scale() > 10
+                || item.getQty().signum() <= 0 || item.getUnitPrice() == null
+                || item.getUnitPrice().signum() <= 0 || item.getUnitPrice().stripTrailingZeros().scale() > 4
+                || amount.subtract(calculated).abs().compareTo(item.getQty().multiply(new BigDecimal("0.00005")).add(new BigDecimal("0.005"))) > 0)
+            throw new BizException("采购金额与数量、进货单价不一致，请重新核对整箱金额");
+        return amount;
     }
 
     /** 单据号:前缀-yyyyMMdd-三位流水,如 RK-20260806-001 */

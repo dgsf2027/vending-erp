@@ -49,6 +49,9 @@ public class ReceiptCreateReq {
         @DecimalMin(value = "0", inclusive = false, message = "进货单价必须大于0")
         private BigDecimal unitPrice;
 
+        /** 整箱采购的原始金额；仅允许四位单价舍入造成的尾差。 */
+        private BigDecimal amount;
+
         /** 关联订货单明细(确认时回写 qty_received) */
         private Long poItemId;
 

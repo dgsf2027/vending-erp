@@ -4,7 +4,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import ProductSelect from '@/components/basedata/ProductSelect.vue'
 import PurchaseImportDialog from '@/components/purchase/PurchaseImportDialog.vue'
 import PurchasePhotoImportDialog from '@/components/purchase/PurchasePhotoImportDialog.vue'
-import type { PurchaseImportKind, PurchaseImportLine, PurchasePhotoDraft } from '@/api/purchase'
+import PurchaseWorkbookImportDialog from '@/components/purchase/PurchaseWorkbookImportDialog.vue'
+import type { PurchaseImportKind, PurchaseImportLine, PurchasePhotoDraft, PurchaseWorkbookDraft } from '@/api/purchase'
 import RedFlushDialog from '@/components/doc/RedFlushDialog.vue'
 import CostAdjustDialog from '@/components/doc/CostAdjustDialog.vue'
 import DocDetailDrawer from '@/components/doc/DocDetailDrawer.vue'
@@ -26,11 +27,28 @@ import {
 
 // Excel 校验通过后回填已有录单表单，保存与过账仍走原有接口。
 const importVisible = ref(false)
+const workbookVisible = ref(false)
+const workbookSavedKeys = ref<string[]>([])
+const workbookSourceKey = ref('')
 const photoImportVisible = ref(false)
 const importKind = ref<PurchaseImportKind>('receipt')
 function openImport(kind: PurchaseImportKind) {
   importKind.value = kind
+  if (kind === 'receipt') { workbookVisible.value = true; return }
   importVisible.value = true
+}
+function applyWorkbook(draft: PurchaseWorkbookDraft) {
+  quickReceive()
+  workbookSourceKey.value = draft.sourceKey
+  receiveForm.bizDate = draft.day.bizDate
+  receiveForm.remark = `拿货表：${draft.fileName} · ${draft.day.bizDate} · 已核对销售商品关联`
+  receiveForm.rows = draft.day.lines.map(line => ({ productId: line.productId, productName: line.productName, skuCode: line.skuCode,
+    sourceName: line.sourceNames.join(' / '), qty: Number(line.qty), unitPrice: Number(line.unitPrice),
+    importedTotal: Number(line.totalPrice), expectQty: null, poItemId: null, hint: null,
+    remark: `原表第 ${line.sourceRows.join('、')} 行：${line.sourceNames.join(' / ')}` }))
+}
+function markWorkbookSaved() {
+  if (workbookSourceKey.value && !workbookSavedKeys.value.includes(workbookSourceKey.value)) workbookSavedKeys.value.push(workbookSourceKey.value)
 }
 function applyImport(rows: PurchaseImportLine[]) {
   if (importKind.value === 'receipt') {
@@ -230,6 +248,7 @@ interface ReceiveRow {
   productName?: string
   skuCode?: string
   sourceName?: string
+  remark?: string
   expectQty: number | null
   qty: number | null
   unitPrice: number | null
@@ -273,6 +292,7 @@ async function resumeReceive(receipt: ReceiptListRow) {
 }
 
 function fillReceiveFromDetail(detail: ReceiptDetail, poNo: string) {
+  workbookSourceKey.value = ''
   receiveDocId.value = detail.head.id
   receiveDocNo.value = detail.head.docNo
   receiveForm.supplierId = detail.head.supplierId ?? null
@@ -287,6 +307,8 @@ function fillReceiveFromDetail(detail: ReceiptDetail, poNo: string) {
     expectQty: i.expectQty == null ? null : Number(i.expectQty),
     qty: Number(i.qty),
     unitPrice: Number(i.unitPrice),
+    importedTotal: Number(i.amount) > 0 ? Number(i.amount) : null,
+    remark: i.remark || undefined,
     poItemId: i.poItemId ?? null,
     hint: null,
   }))
@@ -294,6 +316,7 @@ function fillReceiveFromDetail(detail: ReceiptDetail, poNo: string) {
 
 /** 无订单直接录入(兜底) */
 function quickReceive() {
+  workbookSourceKey.value = ''
   receiveDocId.value = null
   receiveDocNo.value = ''
   receiveForm.supplierId = null
@@ -320,7 +343,18 @@ function diffOf(row: ReceiveRow): number | null {
 }
 
 const receiveTotal = computed(() =>
-  receiveForm.rows.reduce((sum, r) => sum + (Number(r.qty) || 0) * (Number(r.unitPrice) || 0), 0))
+  receiveForm.rows.reduce((sum, r) => sum + receiptRowAmount(r), 0))
+
+function receiptRowAmount(row: ReceiveRow) { return row.importedTotal ?? (Number(row.qty) || 0) * (Number(row.unitPrice) || 0) }
+function updateReceiptNumber(row: ReceiveRow, field: 'qty' | 'unitPrice', value: number | null | undefined) {
+  const next = value ?? null
+  if (row[field] !== next) row.importedTotal = row.boxSpec = row.boxCount = row.boxPrice = null
+  row[field] = next
+}
+function receiptRowsComplete() {
+  return receiveForm.rows.length > 0 && receiveForm.rows.every(r => r.productId && Number.isFinite(Number(r.qty))
+    && Number(r.qty) > 0 && Number.isFinite(Number(r.unitPrice)) && Number(r.unitPrice) > 0)
+}
 
 function buildReceiptPayload() {
   const rows = receiveForm.rows.filter((r) => r.productId && r.qty && r.unitPrice)
@@ -334,14 +368,18 @@ function buildReceiptPayload() {
       qty: Number(r.qty),
       expectQty: r.expectQty,
       unitPrice: Number(r.unitPrice),
+      amount: r.importedTotal ?? null,
       poItemId: r.poItemId,
+      remark: r.remark || null,
     })),
   }
 }
 
 /** 确认入库:草稿保存 → 确认(自动过账库存 + 回写订货单已收量) */
 async function saveAndConfirm() {
+  if (receiveSaving.value) return
   if (!receiveForm.supplierId) return ElMessage.warning('请选择供应商')
+  if (!receiptRowsComplete()) return ElMessage.warning('请补齐每一行的商品、实收数量和单价，或移除空行')
   const payload = buildReceiptPayload()
   if (!payload.items.length) return ElMessage.warning('至少一行完整的 商品+实收数+单价')
   const diffRows = receiveForm.rows.filter((r) => diffOf(r) != null && diffOf(r) !== 0)
@@ -359,11 +397,16 @@ async function saveAndConfirm() {
     } else {
       const detail = await createReceipt(payload)
       docId = detail.head.id
+      receiveDocId.value = docId
+      receiveDocNo.value = detail.head.docNo
     }
     const confirmed = await confirmReceipt(docId!)
+    markWorkbookSaved()
     ElMessage.success(`已确认入库 ${confirmed.head.docNo}:库存已过账${receiveForm.purchaseOrderId ? ',订货单已收量已回写' : ''}`)
     receiveVisible.value = false
     refreshAll()
+  } catch {
+    // 请求层已展示错误；保留已生成的草稿编号，重试时更新原草稿。
   } finally {
     receiveSaving.value = false
   }
@@ -371,19 +414,27 @@ async function saveAndConfirm() {
 
 /** 只存草稿不确认 */
 async function saveDraftOnly() {
+  if (receiveSaving.value) return
   if (!receiveForm.supplierId) return ElMessage.warning('请选择供应商')
+  if (!receiptRowsComplete()) return ElMessage.warning('请补齐每一行的商品、实收数量和单价，或移除空行')
   const payload = buildReceiptPayload()
   if (!payload.items.length) return ElMessage.warning('至少一行完整的 商品+实收数+单价')
-  if (receiveDocId.value) {
-    await updateReceipt(receiveDocId.value, payload)
-  } else {
-    const detail = await createReceipt(payload)
-    receiveDocId.value = detail.head.id
-    receiveDocNo.value = detail.head.docNo
-  }
-  ElMessage.success('草稿已保存,可稍后确认入库')
-  receiveVisible.value = false
-  refreshReceipts()
+  receiveSaving.value = true
+  try {
+    if (receiveDocId.value) {
+      await updateReceipt(receiveDocId.value, payload)
+    } else {
+      const detail = await createReceipt(payload)
+      receiveDocId.value = detail.head.id
+      receiveDocNo.value = detail.head.docNo
+    }
+    ElMessage.success('草稿已保存,可稍后确认入库')
+    markWorkbookSaved()
+    receiveVisible.value = false
+    refreshReceipts()
+  } catch {
+    // 请求层已展示错误，保留表单供修正或重试。
+  } finally { receiveSaving.value = false }
 }
 
 // ============================== 入库单历史 ==============================
@@ -656,7 +707,7 @@ onMounted(() => {
         </span>
       </template>
       <el-alert v-if="receiveForm.rows.some((row) => row.boxSpec != null)" type="info" :closable="false" show-icon style="margin-bottom: 12px">
-        已带入整件明细。整件规格和整件价格仅用于核对；库存按采购数量（基本单位）入账，金额按数量 × 单价计算。确认后才会入库。
+        已带入整件明细。库存按采购数量（基本单位）入账，保留原表总金额，避免箱价折算尾差；修改数量或单价后会重新计算。确认后才会入库。
       </el-alert>
       <div style="display: flex; gap: 14px; margin-bottom: 12px">
         <div style="flex: 1">
@@ -689,14 +740,14 @@ onMounted(() => {
               </div>
             </td>
             <td v-if="receiveForm.purchaseOrderId"><span class="num">{{ row.expectQty ?? '—' }}</span></td>
-            <td><el-input-number v-model="row.qty" :min="0.001" :controls="false" style="width: 80px" /></td>
+            <td><el-input-number :model-value="row.qty" :min="0.001" :controls="false" style="width: 80px" @update:model-value="(value: number | undefined) => updateReceiptNumber(row, 'qty', value)" /></td>
             <td v-if="receiveForm.purchaseOrderId">
               <span v-if="diffOf(row) === null" class="mini">—</span>
               <span v-else-if="diffOf(row) === 0" class="chip c-green">✓ 一致</span>
               <span v-else class="chip c-amber">{{ diffOf(row)! > 0 ? '+' : '' }}{{ diffOf(row) }} 按实收</span>
             </td>
-            <td><el-input-number v-model="row.unitPrice" :min="0.0001" :precision="4" :controls="false" style="width: 80px" @change="checkPrice(row, receiveForm.supplierId)" /></td>
-            <td><span class="num">{{ ((Number(row.qty) || 0) * (Number(row.unitPrice) || 0)).toFixed(2) }}</span></td>
+            <td><el-input-number :model-value="row.unitPrice" :min="0.0001" :precision="4" :controls="false" style="width: 80px" @update:model-value="(value: number | undefined) => updateReceiptNumber(row, 'unitPrice', value)" @change="checkPrice(row, receiveForm.supplierId)" /></td>
+            <td><span class="num">{{ receiptRowAmount(row).toFixed(2) }}</span></td>
             <td>
               <span v-if="row.hint" class="mini" :class="{ 'price-warn': row.hint.warn }">
                 {{ row.hint.warn ? '⚠️ ' : '' }}{{ hintText(row.hint) }}
@@ -715,8 +766,8 @@ onMounted(() => {
         💡 实收≠应收会自动标注差异并<b>按实收入账</b>;确认入库后:仓库账 +、订货单已收量回写(全收=已完成/部分=部分到货)、进价变动自动写价格本。
       </p>
       <template #footer>
-        <el-button @click="receiveVisible = false">关闭</el-button>
-        <el-button @click="saveDraftOnly">仅存草稿</el-button>
+        <el-button :disabled="receiveSaving" @click="receiveVisible = false">关闭</el-button>
+        <el-button :loading="receiveSaving" @click="saveDraftOnly">仅存草稿</el-button>
         <el-button type="primary" :loading="receiveSaving" @click="saveAndConfirm">✓ 确认入库</el-button>
       </template>
     </el-dialog>
@@ -797,6 +848,7 @@ onMounted(() => {
     />
 
     <PurchaseImportDialog v-model="importVisible" :kind="importKind" @import="applyImport" />
+    <PurchaseWorkbookImportDialog v-model="workbookVisible" :saved-keys="workbookSavedKeys" @import="applyWorkbook" />
     <PurchasePhotoImportDialog v-model="photoImportVisible" :suppliers="suppliers" @import="applyPhotoImport" />
 
     <!-- 通用单据详情抽屉(P2-3:入库单号点开即达) -->

@@ -185,6 +185,7 @@ public class PurchaseReceiptService {
             item.setQty(i.getQty());
             item.setExpectQty(i.getExpectQty());
             item.setUnitPrice(i.getUnitPrice());
+            item.setAmount(i.getAmount());
             item.setPoItemId(i.getPoItemId());
             item.setRemark(i.getRemark());
             return item;
