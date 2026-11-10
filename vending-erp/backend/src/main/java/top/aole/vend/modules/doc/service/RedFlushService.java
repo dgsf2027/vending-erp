@@ -195,6 +195,9 @@ public class RedFlushService {
             ir.setBoxQty(item.getBoxQty());
             ir.setQty(item.getQty());
             ir.setUnitPrice(item.getUnitPrice());
+            // 历史零成本采购继续使用原计算路径，不能被新金额校验拦住红冲。
+            if (origin.getDocType() == DocType.PURCHASE_IN && item.getAmount() != null && item.getAmount().signum() > 0)
+                ir.setAmount(item.getAmount());
             ir.setBatchNo(item.getBatchNo());
             ir.setExpireDate(item.getExpireDate());
             ir.setPoItemId(item.getPoItemId());

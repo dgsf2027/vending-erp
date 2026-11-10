@@ -60,6 +60,7 @@ export interface ReceiptItemReq {
   qty: number
   expectQty?: number | null
   unitPrice: number
+  amount?: number | null
   poItemId?: number | null
   remark?: string | null
 }
@@ -253,6 +254,81 @@ export function previewPurchaseImport(kind: PurchaseImportKind, file: File): Pro
   const data = new FormData()
   data.append('file', file)
   return request.post(`/v1/purchase/import/${kind}/preview`, data)
+}
+
+export interface PurchaseSalesCandidate {
+  productId: number
+  skuCode: string
+  productName: string
+  unit: string
+  boxSpec: number | null
+  salesQty: number
+  firstSale?: string
+  lastSale?: string
+  salesNames: string[]
+  reason: string
+}
+export interface PurchaseWorkbookRow {
+  rowNo: number
+  bizDate: string
+  sourceName: string
+  skuCode: string
+  hint: string
+  boxSpec: number | null
+  boxCount: number | null
+  boxPrice: number | null
+  qty: number
+  totalPrice: number
+  unitPrice: number
+  confirmed: boolean
+  needsConfirmation: boolean
+  suggestedProductId?: number
+  matchMessage: string
+  allocations: { productId: number | null; qty: number | null }[]
+  candidates: PurchaseSalesCandidate[]
+  errors: string[]
+}
+export interface PurchaseWorkbookGroup {
+  productId: number
+  skuCode: string
+  productName: string
+  unit: string
+  qty: number
+  totalPrice: number
+  unitPrice: number
+  sourceRows: number[]
+  sourceNames: string[]
+}
+export interface PurchaseWorkbookDay {
+  bizDate: string
+  sourceCount: number
+  totalQty: number
+  totalAmount: number
+  lines: PurchaseWorkbookGroup[]
+  errors: string[]
+}
+export interface PurchaseWorkbookPreview {
+  fileName?: string
+  skippedSubtotals?: number
+  rows: PurchaseWorkbookRow[]
+  days: PurchaseWorkbookDay[]
+  errors: string[]
+  warnings: string[]
+}
+export interface PurchaseWorkbookDraft {
+  day: PurchaseWorkbookDay
+  fileName: string
+  sourceKey: string
+}
+export function previewPurchaseWorkbook(file: File): Promise<PurchaseWorkbookPreview> {
+  const data = new FormData(); data.append('file', file)
+  return request.post('/v1/purchase/import/receipt/workbook/preview', data, { timeout: 120000 })
+}
+export function reviewPurchaseWorkbook(rows: PurchaseWorkbookRow[], defaultDate?: string): Promise<PurchaseWorkbookPreview> {
+  return request.post('/v1/purchase/import/receipt/workbook/review', { rows, defaultDate }, { timeout: 120000 })
+}
+export function purchaseWorkbookTemplate(): Promise<Blob> {
+  return request.get('/v1/purchase/import/receipt/workbook/template', { responseType: 'blob' })
 }
 
 export interface PurchasePhotoCandidate {

@@ -22,6 +22,8 @@ public class DocItemReq {
     private BigDecimal qty;
     private BigDecimal expectQty;
     private BigDecimal unitPrice;
+    /** 仅采购入库可使用原始金额，服务端验证与四位单价一致。 */
+    private BigDecimal amount;
     private String batchNo;
     private LocalDate expireDate;
     private Long poItemId;

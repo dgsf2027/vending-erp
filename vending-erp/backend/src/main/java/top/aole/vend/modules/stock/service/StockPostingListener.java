@@ -52,7 +52,7 @@ public class StockPostingListener {
             for (DocItem item : event.getItems()) {
                 if (originType.getWarehouseDirection() != 0) {
                     writer.postWarehouse(head, item,
-                            signed(item.getQty(), -originType.getWarehouseDirection()), event.getBizTime());
+                            signed(item.getQty(), -originType.getWarehouseDirection()), event.getBizTime(), originType == DocType.PURCHASE_IN);
                 }
                 if (originType.getMachineDirection() != 0) {
                     writer.postMachine(head, item,

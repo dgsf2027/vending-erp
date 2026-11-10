@@ -189,7 +189,7 @@ async function setup(browser, viewport = { width: 1440, height: 1000 }) {
 
     await dialog(page).getByRole('button', { name: '生成入库草稿', exact: true }).click();
     await until(() => draftRequests.length === 1, 'Draft creation should occur only after the user clicks its button');
-    assert.deepEqual(draftRequests[0].items, [{ productId: 7, qty: 60, expectQty: null, unitPrice: 3, poItemId: null }]);
+    assert.deepEqual(draftRequests[0].items, [{ productId: 7, qty: 60, expectQty: null, unitPrice: 3, amount: 180, poItemId: null, remark: null }]);
     assert.equal(draftRequests[0].supplierId, 31);
     assert.equal(draftRequests[0].bizDate, '2026-10-27');
     assert.deepEqual(unexpectedWrites, [], 'Creating a draft must not call confirm or stock APIs');
@@ -281,8 +281,8 @@ async function setup(browser, viewport = { width: 1440, height: 1000 }) {
     await dialog(page).getByRole('button', { name: '生成入库草稿', exact: true }).click();
     await until(() => draftRequests.length === 2, 'Explicit batch draft submission must complete');
     assert.deepEqual(draftRequests[1].items, [
-      { productId: 7, qty: 60, expectQty: null, unitPrice: 3, poItemId: null },
-      { productId: 8, qty: 72, expectQty: null, unitPrice: 2, poItemId: null },
+      { productId: 7, qty: 60, expectQty: null, unitPrice: 3, amount: 180, poItemId: null, remark: null },
+      { productId: 8, qty: 72, expectQty: null, unitPrice: 2, amount: 144, poItemId: null, remark: null },
     ]);
     await receive.getByText('TEST-DRAFT-901', { exact: false }).waitFor();
     await receive.getByRole('button', { name: '关闭', exact: true }).click();

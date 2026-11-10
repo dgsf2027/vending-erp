@@ -5,6 +5,7 @@ import org.springframework.stereotype.Component;
 import top.aole.vend.common.exception.BizException;
 import top.aole.vend.modules.doc.domain.entity.DocHead;
 import top.aole.vend.modules.doc.domain.entity.DocItem;
+import top.aole.vend.modules.doc.domain.enums.DocType;
 import top.aole.vend.modules.stock.domain.entity.StockLedger;
 import top.aole.vend.modules.stock.mapper.StockLedgerMapper;
 
@@ -30,6 +31,10 @@ class StockLedgerWriter {
      * @param signedQty 带方向数量(+入/-出)
      */
     void postWarehouse(DocHead head, DocItem item, BigDecimal signedQty, LocalDateTime bizTime) {
+        postWarehouse(head, item, signedQty, bizTime, head.getDocType() == DocType.PURCHASE_IN);
+    }
+
+    void postWarehouse(DocHead head, DocItem item, BigDecimal signedQty, LocalDateTime bizTime, boolean purchaseAmount) {
         // P1-3 并发透支修复:非豁免出库先锁该 SKU 商品行(FOR UPDATE)把"查余额+写流水"
         // 串行化,再用**当前读**(SUM ... FOR UPDATE)取最新已提交余额——快照读等到锁后
         // 读到的还是旧余额,拦截照样被穿透。P0-A 条件更新只防同一张单双过账,
@@ -50,7 +55,7 @@ class StockLedgerWriter {
                     signedQty.abs().stripTrailingZeros().toPlainString(),
                     after.abs().stripTrailingZeros().toPlainString()));
         }
-        insert(head, item, StockLedger.LOC_WAREHOUSE, null, signedQty, after, bizTime);
+        insert(head, item, StockLedger.LOC_WAREHOUSE, null, signedQty, after, bizTime, purchaseAmount);
     }
 
     /**
@@ -79,11 +84,11 @@ class StockLedgerWriter {
         BigDecimal current = nvl(stockLedgerMapper.sumMachineTransferAfter(
                 head.getMachineId(), item.getProductId(), null));
         insert(head, item, StockLedger.LOC_MACHINE, head.getMachineId(),
-                signedQty, current.add(signedQty), bizTime);
+                signedQty, current.add(signedQty), bizTime, false);
     }
 
     private void insert(DocHead head, DocItem item, String locationType, Long machineId,
-                        BigDecimal changeQty, BigDecimal balanceQty, LocalDateTime bizTime) {
+                        BigDecimal changeQty, BigDecimal balanceQty, LocalDateTime bizTime, boolean purchaseAmount) {
         StockLedger ledger = new StockLedger();
         ledger.setProductId(item.getProductId());
         ledger.setLocationType(locationType);
@@ -98,6 +103,9 @@ class StockLedgerWriter {
                 || item.getUnitPrice().compareTo(BigDecimal.ZERO) == 0 ? null : item.getUnitPrice();
         ledger.setUnitCost(unitCost);
         ledger.setAmount(unitCost == null ? null : changeQty.multiply(unitCost));
+        // 整箱总金额是采购成本依据；采购红冲按同一金额完整冲回。
+        if (purchaseAmount && item.getAmount() != null)
+            ledger.setAmount(changeQty.signum() < 0 ? item.getAmount().negate() : item.getAmount());
         ledger.setBizTime(bizTime);
         ledger.setCreateUser(head.getConfirmBy());
         stockLedgerMapper.insert(ledger);
