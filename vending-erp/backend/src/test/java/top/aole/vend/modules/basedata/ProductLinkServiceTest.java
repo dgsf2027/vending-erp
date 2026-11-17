@@ -73,4 +73,36 @@ class ProductLinkServiceTest {
     @Test void stalePreviewCannotChangeNewSales(){String token=service.preview(26L,1L).getToken();db.update("UPDATE yc_vend_sale_record SET qty=4");assertThrows(BizException.class,()->service.link(26L,1L,token,"测试"));untouched();}
     @Test void rollbackIncludesAliasesSalesAndProducts(){String token=service.preview(26L,1L).getToken();doThrow(new RuntimeException("模拟日志失败")).when(logs).record(anyString(),anyString(),anyString(),anyLong(),any(),any());assertThrows(RuntimeException.class,()->service.link(26L,1L,token,"测试"));untouched();assertEquals(1,db.queryForObject("SELECT COUNT(*) FROM yc_vend_sku_alias",Integer.class));}
     @Test void simultaneousRetryLinksOnlyOnce() throws Exception {String token=service.preview(26L,1L).getToken();ExecutorService pool=Executors.newFixedThreadPool(2);try{List<Future<?>> jobs=new ArrayList<>();for(int n=0;n<2;n++)jobs.add(pool.submit(()->service.link(26L,1L,token,"测试")));for(Future<?> job:jobs)job.get(10,TimeUnit.SECONDS);assertEquals(1L,db.queryForObject("SELECT product_id FROM yc_vend_sale_record",Long.class));verify(logs,times(1)).record(anyString(),anyString(),anyString(),anyLong(),any(),any());}finally{pool.shutdownNow();}}
+    @Test void enteringOriginalProductAutomaticallyKeepsItsCodeAndExistingInventory() {
+        db.update("INSERT INTO yc_vend_doc_item(product_id) VALUES(1)");
+        db.update("INSERT INTO yc_vend_stock_ledger(product_id) VALUES(1)");
+        ProductLinkService.Preview p=service.preview(1L,26L);
+        assertTrue(p.isExecutable(),p.getBlockers().toString());
+        assertEquals(1L,p.getRequestedSourceId());assertEquals(26L,p.getRequestedTargetId());
+        assertEquals(26L,p.getSource().getId());assertEquals(1L,p.getTarget().getId());
+        service.link(1L,26L,p.getToken(),"从旧商品进入");
+        assertEquals(1L,db.queryForObject("SELECT product_id FROM yc_vend_stock_ledger",Long.class));
+        assertEquals(1L,db.queryForObject("SELECT product_id FROM yc_vend_doc_item",Long.class));
+        assertEquals(1L,db.queryForObject("SELECT product_id FROM yc_vend_sale_record",Long.class));
+        assertEquals("YQ000001",catalog().get(0).getSkuCode());assertEquals("瓶",catalog().get(0).getUnit());
+        assertEquals(0,new BigDecimal("15").compareTo(catalog().get(0).getBoxSpec()));
+        service.link(1L,26L,p.getToken(),"重试");
+        verify(logs,times(1)).record(anyString(),anyString(),anyString(),anyLong(),any(),any());
+    }
+    @Test void completeDuplicateProductsKeepEarlierCodeFromEitherEntry() {
+        db.update("UPDATE yc_vend_product SET unit='瓶',box_spec=15 WHERE id=26");
+        assertEquals(1L,service.preview(1L,26L).getTarget().getId());
+        assertEquals(1L,service.preview(26L,1L).getTarget().getId());
+    }
+    @Test void bothProductsWithInventoryRemainBlockedFromEitherEntry() {
+        db.update("INSERT INTO yc_vend_stock_ledger(product_id) VALUES(1),(26)");
+        assertFalse(service.preview(1L,26L).isExecutable());assertFalse(service.preview(26L,1L).isExecutable());
+        assertThrows(BizException.class,()->service.link(1L,26L,"旧预览","测试"));untouched();
+    }
+    @Test void reverseEntryTokenCannotAuthorizeAnotherPairOrChangedSales() {
+        String token=service.preview(1L,26L).getToken();
+        assertThrows(BizException.class,()->service.link(26L,1L,token,"测试"));
+        db.update("UPDATE yc_vend_sale_record SET qty=5");
+        assertThrows(BizException.class,()->service.link(1L,26L,token,"测试"));untouched();
+    }
 }

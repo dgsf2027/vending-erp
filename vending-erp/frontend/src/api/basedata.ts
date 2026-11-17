@@ -36,6 +36,7 @@ export interface Product {
 
 export interface ProductLinkPreview {
   source: Product; target: Product; salesCount: number; aliasCount: number
+  requestedSourceId: number; requestedTargetId: number; directionReason: string
   salesQty: number | string; salesAmount: number | string; salesNames: string[]
   blockers: string[]; executable: boolean; token: string
 }

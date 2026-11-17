@@ -32,6 +32,8 @@ public class ProductLinkService {
     };
     @Data public static class Preview {
         private Product source, target;
+        private Long requestedSourceId, requestedTargetId;
+        private String directionReason;
         private int salesCount, aliasCount;
         private BigDecimal salesQty, salesAmount;
         private List<String> blockers=new ArrayList<>();
@@ -55,8 +57,28 @@ public class ProductLinkService {
     }
     private double score(Product a,Product b){return ProductCatalogMatcher.similarity(ProductCatalogMatcher.normalize(a.getProductName()),ProductCatalogMatcher.normalize(b.getProductName()));}
 
+    private boolean provisional(Product p) {
+        return (p.getBoxSpec()==null || p.getBoxSpec().signum()==0) && "件".equals(p.getUnit())
+            && p.getRemark()!=null && p.getRemark().startsWith("销售导入自动建档");
+    }
+
+    /** 从任意一行进入都得到同一方向：完整档案优先，其次保留先建档的编码。 */
+    private Product retained(Product first,Product second) {
+        if(provisional(first)!=provisional(second))return provisional(first)?second:first;
+        return first.getId().compareTo(second.getId())<=0?first:second;
+    }
+
     public Preview preview(Long sourceId,Long targetId) {
-        Preview p=new Preview(); Product source=get(sourceId),target=get(targetId);p.setSource(source);p.setTarget(target);
+        Preview p=new Preview();p.setRequestedSourceId(sourceId);p.setRequestedTargetId(targetId);
+        Product first=get(sourceId),second=get(targetId),source=first,target=second;
+        if(first.getStockOwnerId()==null && second.getStockOwnerId()==null && !sourceId.equals(targetId)) {
+            target=retained(first,second);source=target.getId().equals(sourceId)?second:first;
+            sourceId=source.getId();targetId=target.getId();
+        }
+        p.setSource(source);p.setTarget(target);
+        p.setDirectionReason(provisional(source) && !provisional(target)
+            ?"自动保留原商品的完整资料，新销售名称同步为别名。"
+            :"自动保留先建档的商品编码，另一个名称同步为别名。");
         List<String> blockers=p.getBlockers();
         if(sourceId.equals(targetId))blockers.add("不能关联商品自身，请选择需要保留的旧商品");
         if(source.getStockOwnerId()!=null)blockers.add("这个商品已经关联其他库存商品，请刷新后查看");
@@ -64,8 +86,7 @@ public class ProductLinkService {
         if(Boolean.TRUE.equals(source.getSharedStock()) || count("SELECT COUNT(*) FROM yc_vend_product WHERE tenant_id=? AND stock_owner_id=? AND is_deleted=0",sourceId)>0)
             blockers.add("该商品已有其他商品共用库存，不能作为新增商品再次关联");
         if(ProductCatalogMatcher.conflictingSize(source.getProductName(),target.getProductName()))blockers.add("两个商品容量不同，请核对商品规格");
-        boolean provisional=(source.getBoxSpec()==null || source.getBoxSpec().signum()==0) && "件".equals(source.getUnit())
-            && source.getRemark()!=null && source.getRemark().startsWith("销售导入自动建档");
+        boolean provisional=provisional(source);
         if(!provisional && !Objects.equals(source.getUnit(),target.getUnit()))blockers.add("基本单位不同，请先核对瓶、箱等数量单位");
         if(!provisional && source.getBoxSpec()!=null && target.getBoxSpec()!=null && source.getBoxSpec().compareTo(target.getBoxSpec())!=0)
             blockers.add("每箱数量不同，请先核对箱规");
@@ -104,10 +125,12 @@ public class ProductLinkService {
         jdbc.queryForList("SELECT id FROM yc_vend_product WHERE tenant_id=? AND id IN (?,?) ORDER BY id FOR UPDATE",Long.class,TENANT,sourceId,targetId);
         Product source=get(sourceId),target=get(targetId);
         if(Objects.equals(source.getStockOwnerId(),targetId) && target.getStockOwnerId()==null)return; // 网络重试幂等
-        jdbc.queryForList("SELECT id FROM yc_vend_sale_record WHERE tenant_id=? AND product_id=? AND is_deleted=0 ORDER BY id FOR UPDATE",Long.class,TENANT,sourceId);
+        if(Objects.equals(target.getStockOwnerId(),sourceId) && source.getStockOwnerId()==null)return;
+        jdbc.queryForList("SELECT id FROM yc_vend_sale_record WHERE tenant_id=? AND product_id IN (?,?) AND is_deleted=0 ORDER BY id FOR UPDATE",Long.class,TENANT,sourceId,targetId);
         Preview p=preview(sourceId,targetId);
         if(!p.isExecutable())throw new BizException(String.join("；",p.getBlockers()));
         if(token==null || !token.equals(p.getToken()))throw new BizException("商品或销售记录已变化，请重新核对关联影响");
+        source=p.getSource();target=p.getTarget();sourceId=source.getId();targetId=target.getId();
         jdbc.update("UPDATE yc_vend_sku_alias SET product_id=? WHERE tenant_id=? AND product_id=? AND is_deleted=0",targetId,TENANT,sourceId);
         bind(targetId,source.getSkuCode(),source.getProductName(),null,operator);
         bind(targetId,SalesProductService.aliasCode(source.getProductName()),source.getProductName(),null,operator);
