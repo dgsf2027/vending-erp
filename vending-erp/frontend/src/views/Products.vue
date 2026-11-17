@@ -15,7 +15,7 @@ import ProductPanel from '@/components/basedata/ProductPanel.vue'
       <span class="sub">按商品售价、拿货价和单件利润查看商品,利润从高到低一目了然</span>
     </div>
     <p class="ledger-note">
-      勾选商品后可<b>批量删除</b>未使用档案；单个商品可在操作菜单中编辑、管理别名。有业务记录的商品保留历史档案，请使用停售。
+      重复建档的商品可点<b>关联已有商品</b>，确认后沿用旧编码；其他别名可在操作菜单中管理。勾选后可批量删除未使用档案。
     </p>
     <ProductPanel />
   </div>

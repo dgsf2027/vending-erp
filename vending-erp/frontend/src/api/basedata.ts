@@ -34,6 +34,21 @@ export interface Product {
   createTime?: string
 }
 
+export interface ProductLinkPreview {
+  source: Product; target: Product; salesCount: number; aliasCount: number
+  salesQty: number | string; salesAmount: number | string; salesNames: string[]
+  blockers: string[]; executable: boolean; token: string
+}
+export function productLinkCandidates(id: number): Promise<Product[]> {
+  return request.get(`/v1/basedata/products/${id}/link/candidates`)
+}
+export function previewProductLink(id: number, targetId: number): Promise<ProductLinkPreview> {
+  return request.get(`/v1/basedata/products/${id}/link/preview`, { params: { targetId } })
+}
+export function linkExistingProduct(id: number, targetId: number, token: string): Promise<void> {
+  return request.post(`/v1/basedata/products/${id}/link`, { targetId, token }, opHeaders())
+}
+
 export interface SkuAlias {
   id?: number
   aliasCode: string
