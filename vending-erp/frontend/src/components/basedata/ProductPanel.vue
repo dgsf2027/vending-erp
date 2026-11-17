@@ -15,6 +15,7 @@ import { productProfit } from '@/utils/product-profit'
 import ProductFormDialog from './ProductFormDialog.vue'
 import ProductImportDialog from './SmartProductImportDialog.vue'
 import AliasManageDialog from './AliasManageDialog.vue'
+import ProductLinkDialog from './ProductLinkDialog.vue'
 import AliasPendingDrawer from './AliasPendingDrawer.vue'
 
 /** 商品档案:按五列表展示价格与参考单件利润,在分页前进行服务端排序。 */
@@ -46,6 +47,9 @@ const formVisible = ref(false)
 const editing = ref<Product | null>(null)
 const aliasVisible = ref(false)
 const aliasProduct = ref<Product | null>(null)
+const linkVisible = ref(false)
+const linkProduct = ref<Product | null>(null)
+function openLink(row: Product) { linkProduct.value = row; linkVisible.value = true }
 const pendingVisible = ref(false)
 const importVisible = ref(false)
 const deletingId = ref<number | null>(null)
@@ -306,8 +310,9 @@ defineExpose({ reload: load })
             <span class="chip" :class="statusChip(row.productStatus)">{{ row.productStatus }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100" align="center">
+        <el-table-column label="操作" width="205" align="center" fixed="right">
           <template #default="{ row }">
+            <el-button link type="primary" size="small" :disabled="bulkBusy || deletingId !== null" @click="openLink(row)">关联已有商品</el-button>
             <el-dropdown trigger="click" @command="(command: string) => handleAction(command, row)">
               <el-button size="small" :disabled="deletingId === row.id" :aria-label="`${row.productName}的操作`">
                 {{ deletingId === row.id ? '删除中…' : '操作 ▾' }}
@@ -364,6 +369,7 @@ defineExpose({ reload: load })
     <ProductFormDialog v-model:visible="formVisible" :product="editing" @saved="load" />
     <ProductImportDialog v-model:visible="importVisible" @saved="load(); loadPendingCount()" />
     <AliasManageDialog v-model:visible="aliasVisible" :product="aliasProduct" @changed="loadPendingCount" />
+    <ProductLinkDialog v-model:visible="linkVisible" :product="linkProduct" @linked="load(); loadPendingCount()" />
     <AliasPendingDrawer v-model:visible="pendingVisible" @changed="loadPendingCount(); load()" />
   </div>
 </template>
