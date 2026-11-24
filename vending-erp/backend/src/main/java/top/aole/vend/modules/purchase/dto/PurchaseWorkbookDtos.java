@@ -1,5 +1,6 @@
 package top.aole.vend.modules.purchase.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.Data;
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -24,9 +25,13 @@ public final class PurchaseWorkbookDtos {
         private List<String> salesNames = new ArrayList<>();
         private String reason;
     }
-    @Data public static class SourceRow {
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class SourceRow {
         private int rowNo;
         private String bizDate;
+        private String sectionKey;
+        private String sectionTitle;
         private String sourceName;
         private String skuCode;
         private String hint;
@@ -40,9 +45,26 @@ public final class PurchaseWorkbookDtos {
         private List<Allocation> allocations = new ArrayList<>();
         private List<Candidate> candidates = new ArrayList<>();
         private Long suggestedProductId;
+        private Long matchedProductId;
+        private String matchedSkuCode;
+        private String matchedProductName;
+        /** matched=绿色自动匹配, unmatched=红色未匹配待手动绑定 */
+        private String matchStatus;
         private String matchMessage;
         private boolean needsConfirmation;
         private List<String> errors = new ArrayList<>();
+    }
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class Section {
+        private String key;
+        private String title;
+        private String bizDate;
+        private String note;
+        private BigDecimal totalBoxCount;
+        private BigDecimal totalQty = BigDecimal.ZERO;
+        private BigDecimal totalAmount = BigDecimal.ZERO;
+        private List<Integer> rowNos = new ArrayList<>();
     }
     @Data public static class GroupLine {
         private Long productId;
@@ -63,9 +85,13 @@ public final class PurchaseWorkbookDtos {
         private List<GroupLine> lines = new ArrayList<>();
         private List<String> errors = new ArrayList<>();
     }
-    @Data public static class Preview {
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class Preview {
         private String fileName;
+        private String sheetTitle;
         private int skippedSubtotals;
+        private List<Section> sections = new ArrayList<>();
         private List<SourceRow> rows = new ArrayList<>();
         private List<Day> days = new ArrayList<>();
         private List<String> errors = new ArrayList<>();

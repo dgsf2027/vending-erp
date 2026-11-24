@@ -81,4 +81,24 @@ public class PurchaseSharedStockService {
         Dtos.BindAliasReq req = new Dtos.BindAliasReq(); req.setProductId(id); req.setAliasCode(code);
         req.setAliasName(name); req.setBindSource("采购共用库存"); aliases.bind(req, operator);
     }
+
+    /** 记住采购表格手动绑定关系，下次导入同名称时可直接自动匹配为绿色。 */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void rememberPurchaseBinding(Long productId, String sourceName, String operator) {
+        if (productId == null || sourceName == null || sourceName.trim().isEmpty()) return;
+        Product target = products.selectById(productId);
+        if (target == null || target.getStockOwnerId() != null) return;
+        String trimmed = sourceName.trim();
+        if (trimmed.length() > 128) trimmed = trimmed.substring(0, 128);
+        String normSource = ProductCatalogMatcher.normalize(trimmed);
+        if (normSource.isEmpty() || normSource.equals(ProductCatalogMatcher.normalize(target.getProductName()))) return;
+        if (ProductCatalogMatcher.conflictingSize(trimmed, target.getProductName())) return;
+        Dtos.BindAliasReq req = new Dtos.BindAliasReq();
+        req.setProductId(productId);
+        req.setAliasCode("PUR/" + cn.hutool.crypto.digest.DigestUtil.md5Hex(normSource));
+        req.setAliasBarcode("");
+        req.setAliasName(trimmed);
+        req.setBindSource("采购表格导入");
+        aliases.bind(req, operator);
+    }
 }

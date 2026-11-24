@@ -150,4 +150,34 @@ class PurchaseSimpleImportTest {
         BigDecimal sum=BigDecimal.ZERO;for(String payload:db.queryForList("SELECT payload FROM test_receipt",String.class))for(ReceiptCreateReq.Item item:json.readValue(payload,ReceiptCreateReq.Item[].class))sum=sum.add(item.getAmount());
         assertEquals(0,new BigDecimal("13976").compareTo(sum));
     }
+
+    @Test void manualRowBindingBypassesGroupCardAndRemembersAliasForNextImport() throws Exception {
+        add(30, "达利园乐虎功能饮料380ml");
+        SimplePreview first = service.preview(file("送货单.xlsx",
+                "2026-11-09|外星人电解质水||15|5|75|60|300",
+                "2026-11-09|乐虎||15|10|150|50|500",
+                "2026-11-17|普通饮料500ml||15|2|30|50|100"));
+        assertEquals("unmatched", first.getPreview().getRows().get(0).getMatchStatus());
+        assertEquals("unmatched", first.getPreview().getRows().get(1).getMatchStatus());
+        assertEquals("matched", first.getPreview().getRows().get(2).getMatchStatus());
+
+        CommitRequest req = new CommitRequest();
+        req.setBatchKey(first.getBatchKey());
+        req.setSupplierId(1L);
+        req.setRememberBindings(true);
+        // 直接按行手动绑定（不强制点共用库存分组）
+        RowChoice r1 = new RowChoice(); r1.setRowNo(2); r1.setProductId(7L);
+        RowChoice r2 = new RowChoice(); r2.setRowNo(3); r2.setProductId(30L);
+        req.setRows(Arrays.asList(r1, r2));
+
+        CommitResult result = service.commit(req, "测试");
+        assertEquals(2, result.getReceiptIds().size());
+        assertEquals(2, receiptsCount());
+
+        // 下次再导「乐虎」，因已记住绑定，直接绿色自动匹配
+        SimplePreview next = service.preview(file("下次送货单.xlsx",
+                "2026-11-20|乐虎||15|4|60|50|200"));
+        assertEquals("matched", next.getPreview().getRows().get(0).getMatchStatus());
+        assertEquals(30L, next.getPreview().getRows().get(0).getMatchedProductId());
+    }
 }

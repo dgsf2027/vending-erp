@@ -113,32 +113,48 @@ public class ExcelParser {
             if (sheet == null) {
                 throw new BizException("文件里找不到工作表「" + sheetNameContains + "」——请上传老 Excel 进销存套表原文件");
             }
-            RawSheet result = new RawSheet();
-            result.setSheetName(sheet.getSheetName());
-            for (Row row : sheet) {
-                RawSheet.RawRow parsed = new RawSheet.RawRow();
-                parsed.setRowNo(row.getRowNum() + 1);
-                short lastCell = row.getLastCellNum();
-                boolean any = false;
-                for (int c = 0; c < lastCell; c++) {
-                    String text = cellText(row.getCell(c));
-                    text = text == null || text.trim().isEmpty() ? null : text.trim();
-                    parsed.getCells().add(text);
-                    if (text != null) {
-                        any = true;
-                    }
-                }
-                if (any) {
-                    result.getRows().add(parsed);
-                }
-            }
-            if (result.getRows().isEmpty()) {
-                throw new BizException("工作表「" + sheet.getSheetName() + "」内容为空");
-            }
-            return result;
+            return readRawSheet(sheet);
         } catch (IOException e) {
             throw new BizException("Excel 解析失败，请上传未加密、未损坏的 .xls 或 .xlsx 文件");
         }
+    }
+
+    /** 读取首个工作表的全部非空原始行（保留标题、分单横幅、重复表头、合计及备注行）。 */
+    public RawSheet parseRawFirstSheet(InputStream in) {
+        try (Workbook wb = openWorkbook(in)) {
+            if (wb.getNumberOfSheets() <= 0) {
+                throw new BizException("文件内容为空:找不到工作表");
+            }
+            return readRawSheet(wb.getSheetAt(0));
+        } catch (IOException e) {
+            throw new BizException("Excel 解析失败，请上传未加密、未损坏的 .xls 或 .xlsx 文件");
+        }
+    }
+
+    private RawSheet readRawSheet(Sheet sheet) {
+        RawSheet result = new RawSheet();
+        result.setSheetName(sheet.getSheetName());
+        for (Row row : sheet) {
+            RawSheet.RawRow parsed = new RawSheet.RawRow();
+            parsed.setRowNo(row.getRowNum() + 1);
+            short lastCell = row.getLastCellNum();
+            boolean any = false;
+            for (int c = 0; c < lastCell; c++) {
+                String text = cellText(row.getCell(c));
+                text = text == null || text.trim().isEmpty() ? null : text.trim();
+                parsed.getCells().add(text);
+                if (text != null) {
+                    any = true;
+                }
+            }
+            if (any) {
+                result.getRows().add(parsed);
+            }
+        }
+        if (result.getRows().isEmpty()) {
+            throw new BizException("工作表「" + sheet.getSheetName() + "」内容为空");
+        }
+        return result;
     }
 
     /** 由 POI 检查文件签名，避免把售卖机的真实 OLE .xls 当作 OOXML 读取。 */

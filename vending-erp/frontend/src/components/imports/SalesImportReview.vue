@@ -7,22 +7,63 @@ const tab = ref('rows')
 const sales = computed(() => props.preview.sales!)
 const money = (value: number) => Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const integer = (value: number) => Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 3 })
+const duplicateRows = computed(() => sales.value.duplicateRowCount ?? 0)
+const duplicateOrders = computed(() => sales.value.duplicateOrderCount ?? 0)
+const newRowCount = computed(() => sales.value.newRowCount ?? props.preview.rowTotal)
+const duplicatePreviewRows = computed(() => sales.value.duplicatePreviewRows ?? [])
+const sampleDuplicateOrders = computed(() => sales.value.sampleDuplicateOrders ?? [])
 const newCount = computed(() => sales.value.products.filter(p => p.status === '新增商品').length)
 const pendingCount = computed(() => sales.value.products.filter(p => !['已匹配', '新增商品'].includes(p.status)).length)
 const headers = computed(() => props.preview.sourceHeaders?.length ? props.preview.sourceHeaders : props.preview.headers)
-const rows = computed(() => props.preview.sourcePreviewRows?.length ? props.preview.sourcePreviewRows : props.preview.previewRows)
+const rows = computed(() => props.preview.sourcePreviewRows ?? props.preview.previewRows)
 </script>
 
 <template>
   <div class="sales-review">
-    <div class="sales-format"><el-tag type="success">已识别：{{ sales.format }}</el-tag><span>{{ sales.dateFrom }} 至 {{ sales.dateTo }}</span></div>
-    <div class="sales-totals">
-      <div><span>销售明细 / 订单</span><b>{{ integer(preview.rowTotal) }} <small>行 / {{ integer(sales.orderCount) }} 单</small></b></div>
-      <div><span>表格销售数量</span><b>{{ integer(sales.quantity) }} <small>件</small></b></div>
-      <div><span>表格实收合计</span><b>¥{{ money(sales.amount) }}</b></div>
-      <div><span>商品 / 机器</span><b>{{ sales.productCount }} <small>种 / {{ sales.machineCount }} 台</small></b></div>
+    <div class="sales-format">
+      <el-tag type="success">已识别：{{ sales.format }}</el-tag>
+      <el-tag v-if="duplicateRows > 0" type="warning">已按订单编号自动清除重复 {{ integer(duplicateRows) }} 行</el-tag>
+      <el-tag v-else type="info">已核对历史订单编号：无重复</el-tag>
+      <span v-if="sales.dateFrom || sales.dateTo">{{ sales.dateFrom }} 至 {{ sales.dateTo }}</span>
     </div>
-    <p class="sales-rule">以上是整张表的合计，包含已经导入过的记录；确认后会显示实际新增和跳过数量。同一订单的不同商品分别保留。</p>
+    <el-alert
+      v-if="duplicateRows > 0 && newRowCount === 0"
+      type="warning"
+      :closable="false"
+      show-icon
+      class="mb-10px"
+      :title="`表中全部 ${integer(preview.rowTotal)} 行（${integer(duplicateOrders)} 个订单编号，¥${money(sales.duplicateAmount || 0)}）均已导入过，已全部清除，无需重复导入。`"
+    />
+    <el-alert
+      v-else-if="duplicateRows > 0"
+      type="success"
+      :closable="false"
+      show-icon
+      class="mb-10px"
+      :title="`已与历史销售记录核对订单编号：自动清除重复 ${integer(duplicateRows)} 行（${integer(duplicateOrders)} 单 · ¥${money(sales.duplicateAmount || 0)}），以下仅保留 ${integer(newRowCount)} 行新增记录待导入。`"
+    />
+    <div class="sales-totals">
+      <div>
+        <span>{{ duplicateRows > 0 ? '待导入明细 / 订单' : '销售明细 / 订单' }}</span>
+        <b>{{ integer(newRowCount) }} <small>行 / {{ integer(sales.orderCount) }} 单</small></b>
+        <em v-if="duplicateRows > 0">原表 {{ integer(preview.rowTotal) }} 行 · 已清重复 {{ integer(duplicateRows) }} 行</em>
+      </div>
+      <div>
+        <span>{{ duplicateRows > 0 ? '待导入销售数量' : '表格销售数量' }}</span>
+        <b>{{ integer(sales.quantity) }} <small>件</small></b>
+        <em v-if="duplicateRows > 0">原表 {{ integer(sales.rawQuantity || 0) }} 件 · 已清 {{ integer(sales.duplicateQuantity || 0) }} 件</em>
+      </div>
+      <div>
+        <span>{{ duplicateRows > 0 ? '待导入实收合计' : '表格实收合计' }}</span>
+        <b>¥{{ money(sales.amount) }}</b>
+        <em v-if="duplicateRows > 0">原表 ¥{{ money(sales.rawAmount || 0) }} · 已清 ¥{{ money(sales.duplicateAmount || 0) }}</em>
+      </div>
+      <div>
+        <span>商品 / 机器</span>
+        <b>{{ sales.productCount }} <small>种 / {{ sales.machineCount }} 台</small></b>
+      </div>
+    </div>
+    <p class="sales-rule">系统已按订单编号与上次及历史导入的销售记录自动对比，重复订单已清除、不会重复入账；同一新订单的不同商品明细分别保留。</p>
     <p v-if="sales.format === '元气森林销售表'" class="sales-rule">按“订单时间”记销售，单价由支付金额÷销售数量计算。优惠券抵扣共 ¥{{ money(sales.discount) }}，仅供核对，不加进实收金额。</p>
     <el-alert v-if="sales.missingMachines.length" type="error" :closable="false" title="这些柜子编码还没有机器档案，请先到设置中心补充，再重新核对。" class="mb-8px">
       <div class="missing-machines">{{ sales.missingMachines.join('、') }}</div>
@@ -32,8 +73,20 @@ const rows = computed(() => props.preview.sourcePreviewRows?.length ? props.prev
       <div>合计不包含无法读取的数值；最多展示前20条问题。</div>
     </el-alert>
     <el-tabs v-model="tab">
-      <el-tab-pane label="销售明细（前20行）" name="rows">
+      <el-tab-pane :label="duplicateRows > 0 ? `待导入明细（${integer(newRowCount)}行，前20行）` : '销售明细（前20行）'" name="rows">
         <el-table :data="rows" border size="small" max-height="360">
+          <el-table-column v-for="header in headers" :key="header" :prop="header" :label="header" :min-width="header.includes('名称') ? 200 : 145" show-overflow-tooltip />
+          <template #empty><div class="sales-empty">已清除全部重复记录，本次没有新的销售明细可导入</div></template>
+        </el-table>
+      </el-tab-pane>
+      <el-tab-pane v-if="duplicateRows > 0" :label="`已清除重复（${integer(duplicateRows)}行）`" name="duplicates">
+        <p v-if="sampleDuplicateOrders.length" class="sales-rule">
+          重复订单编号示例（前{{ sampleDuplicateOrders.length }}个）：{{ sampleDuplicateOrders.join('、') }}
+        </p>
+        <el-table :data="duplicatePreviewRows" border size="small" max-height="360">
+          <el-table-column label="清除原因" width="110">
+            <template #default="{ row }"><el-tag type="danger" size="small">{{ row.__dupReason || '历史已导入' }}</el-tag></template>
+          </el-table-column>
           <el-table-column v-for="header in headers" :key="header" :prop="header" :label="header" :min-width="header.includes('名称') ? 200 : 145" show-overflow-tooltip />
         </el-table>
       </el-tab-pane>
@@ -62,7 +115,9 @@ const rows = computed(() => props.preview.sourcePreviewRows?.length ? props.prev
 .sales-totals span { display:block; color:#64766a; font-size:12px; margin-bottom:8px; }
 .sales-totals b { color:#24563e; font-size:23px; font-variant-numeric:tabular-nums; }
 .sales-totals small { font-size:12px; font-weight:normal; }
+.sales-totals em { display:block; margin-top:6px; font-style:normal; font-size:11px; color:#6d7d74; }
 .sales-rule { color:#66766c; line-height:1.7; font-size:12px; margin:10px 0; }
+.sales-empty { padding:18px 0; color:#75857c; }
 .missing-machines { overflow-wrap:anywhere; line-height:1.8; }
 @media(max-width:680px) { .sales-totals { grid-template-columns:repeat(2,minmax(0,1fr)); } .sales-totals b { font-size:19px; } }
 </style>

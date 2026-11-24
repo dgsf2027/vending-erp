@@ -40,6 +40,16 @@ export interface SalesPreview {
   invalidRows: number
   issues: string[]
   missingMachines: string[]
+  rawRowCount?: number
+  newRowCount?: number
+  duplicateRowCount?: number
+  duplicateOrderCount?: number
+  rawQuantity?: number
+  rawAmount?: number
+  duplicateQuantity?: number
+  duplicateAmount?: number
+  sampleDuplicateOrders?: string[]
+  duplicatePreviewRows?: Record<string, string | null>[]
   products: {
     sourceName: string
     barcode: string | null

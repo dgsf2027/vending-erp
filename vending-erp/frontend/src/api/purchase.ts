@@ -276,6 +276,8 @@ export interface PurchaseSalesCandidate {
 export interface PurchaseWorkbookRow {
   rowNo: number
   bizDate: string
+  sectionKey?: string | null
+  sectionTitle?: string | null
   sourceName: string
   skuCode: string
   hint: string
@@ -288,10 +290,24 @@ export interface PurchaseWorkbookRow {
   confirmed: boolean
   needsConfirmation: boolean
   suggestedProductId?: number
+  matchedProductId?: number | null
+  matchedSkuCode?: string | null
+  matchedProductName?: string | null
+  matchStatus?: 'matched' | 'unmatched'
   matchMessage: string
   allocations: { productId: number | null; qty: number | null }[]
   candidates: PurchaseSalesCandidate[]
   errors: string[]
+}
+export interface PurchaseWorkbookSection {
+  key: string
+  title: string
+  bizDate: string
+  note?: string | null
+  totalBoxCount?: number | null
+  totalQty: number
+  totalAmount: number
+  rowNos: number[]
 }
 export interface PurchaseWorkbookGroup {
   productId: number
@@ -314,7 +330,9 @@ export interface PurchaseWorkbookDay {
 }
 export interface PurchaseWorkbookPreview {
   fileName?: string
+  sheetTitle?: string | null
   skippedSubtotals?: number
+  sections?: PurchaseWorkbookSection[]
   rows: PurchaseWorkbookRow[]
   days: PurchaseWorkbookDay[]
   errors: string[]
@@ -349,7 +367,7 @@ export function previewSimplePurchase(file: File): Promise<PurchaseSimplePreview
   return request.post('/v1/purchase/import/receipt/workbook/simple-preview', data, { timeout: 120000 })
 }
 export function commitSimplePurchase(data: {
-  batchKey: string; supplierId: number; defaultDate?: string; groups: PurchaseStockChoice[]; rows: { rowNo: number; productId: number }[]
+  batchKey: string; supplierId: number; defaultDate?: string; rememberBindings?: boolean; groups: PurchaseStockChoice[]; rows: { rowNo: number; productId: number }[]
 }): Promise<{ receiptIds: number[]; alreadyImported: boolean }> {
   return request.post('/v1/purchase/import/receipt/workbook/commit', data, { timeout: 120000 })
 }

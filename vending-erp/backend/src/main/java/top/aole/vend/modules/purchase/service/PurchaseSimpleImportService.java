@@ -83,11 +83,14 @@ public class PurchaseSimpleImportService {
             Long chosen = rowChoices.get(row.getRowNo());
             if (group != null) {
                 GroupChoice choice = choices.get(group.getKey());
-                if (choice == null) throw new BizException("请先确认「" + group.getName() + "」哪些口味共用库存");
-                // 指明口味且该口味未勾选时，保留它的独立库存。
-                Long suggested = row.getSuggestedProductId();
-                if (chosen == null) chosen = suggested != null && !choice.getMemberIds().contains(suggested) ? suggested : choice.getTargetId();
-                if (choice.getMemberIds().contains(chosen)) chosen = choice.getTargetId();
+                if (choice != null) {
+                    // 指明口味且该口味未勾选时，保留它的独立库存。
+                    Long suggested = row.getSuggestedProductId();
+                    if (chosen == null) chosen = suggested != null && !choice.getMemberIds().contains(suggested) ? suggested : choice.getTargetId();
+                    if (choice.getMemberIds().contains(chosen)) chosen = choice.getTargetId();
+                } else if (chosen == null) {
+                    throw new BizException("请先确认「" + group.getName() + "」哪些口味共用库存");
+                }
             }
             if (chosen != null) {
                 Allocation a = new Allocation(); a.setProductId(chosen); a.setQty(row.getQty());
@@ -100,6 +103,23 @@ public class PurchaseSimpleImportService {
         for (StockGroup group : proposed) {
             GroupChoice choice = choices.get(group.getKey());
             if (choice != null && choice.getMemberIds().size() > 1) sharedStock.merge(choice.getTargetId(), choice.getMemberIds(), group.getName(), operator);
+        }
+        if (request.isRememberBindings() && !rowChoices.isEmpty()) {
+            Map<String, Set<Long>> boundByName = new LinkedHashMap<>();
+            Map<String, String> rawNameByNorm = new HashMap<>();
+            for (SourceRow row : current.getRows()) {
+                Long chosen = rowChoices.get(row.getRowNo());
+                if (chosen == null || row.getSourceName() == null || row.getSourceName().trim().isEmpty()) continue;
+                String normName = ProductCatalogMatcher.normalize(row.getSourceName());
+                if (normName.isEmpty()) continue;
+                boundByName.computeIfAbsent(normName, k -> new LinkedHashSet<>()).add(chosen);
+                rawNameByNorm.putIfAbsent(normName, row.getSourceName().trim());
+            }
+            for (Map.Entry<String, Set<Long>> entry : boundByName.entrySet()) {
+                if (entry.getValue().size() == 1) {
+                    sharedStock.rememberPurchaseBinding(entry.getValue().iterator().next(), rawNameByNorm.get(entry.getKey()), operator);
+                }
+            }
         }
         for (Day day : checked.getDays()) {
             if (day.getLines().isEmpty()) throw new BizException("采购明细为空");

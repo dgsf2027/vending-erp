@@ -84,6 +84,17 @@ public final class ImportDtos {
         private List<String> issues = new ArrayList<>();
         private List<String> missingMachines = new ArrayList<>();
         private List<SalesProductPreview> products = new ArrayList<>();
+        /** 核对历史已导入销售记录的订单编号后，原始/去重/新增统计。 */
+        private int rawRowCount;
+        private int newRowCount;
+        private int duplicateRowCount;
+        private int duplicateOrderCount;
+        private BigDecimal rawQuantity = BigDecimal.ZERO;
+        private BigDecimal rawAmount = BigDecimal.ZERO;
+        private BigDecimal duplicateQuantity = BigDecimal.ZERO;
+        private BigDecimal duplicateAmount = BigDecimal.ZERO;
+        private List<String> sampleDuplicateOrders = new ArrayList<>();
+        private List<Map<String, String>> duplicatePreviewRows = new ArrayList<>();
     }
 
     @Data

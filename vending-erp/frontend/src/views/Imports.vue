@@ -130,8 +130,9 @@ function makeUploader(type: ImportFileType) {
 }
 
 const previewColumns = computed(() => preview.value?.sourceHeaders?.length ? preview.value.sourceHeaders : preview.value?.headers ?? [])
-const previewDataRows = computed(() => preview.value?.sourcePreviewRows?.length ? preview.value.sourcePreviewRows : preview.value?.previewRows ?? [])
-const canConfirm = computed(() => !!preview.value?.columnsOk && !preview.value.sales?.invalidRows && !preview.value.sales?.missingMachines.length)
+const previewDataRows = computed(() => preview.value?.sourcePreviewRows !== undefined && preview.value?.sales ? preview.value.sourcePreviewRows : (preview.value?.sourcePreviewRows?.length ? preview.value.sourcePreviewRows : preview.value?.previewRows ?? []))
+const salesHasNoNewRows = computed(() => !!preview.value?.sales && preview.value.sales.newRowCount !== undefined && preview.value.sales.newRowCount <= 0)
+const canConfirm = computed(() => !!preview.value?.columnsOk && !preview.value.sales?.invalidRows && !preview.value.sales?.missingMachines.length && !salesHasNoNewRows.value)
 
 // ---------- 导入自愈(接入点#9 IMPORT_FIX)----------
 const fixSuggesting = ref(false)
@@ -596,8 +597,8 @@ function showNewProducts(products: import('@/api/imports').AutoCreatedProduct[])
           title="直接使用你的销售表，下面10列无需改名，也不必另外填写商品编码。"
           description="柜子编码对应机器，销售数量按瓶/罐等基本单位；支付金额是该行商品实收，不是单价。上传后可查看整表合计和商品编码匹配结果。" />
         <div class="preview-caption">
-          <b>{{ preview ? preview.fileName + ' · 共 ' + preview.rowTotal + ' 行' : '待导入明细' }}</b>
-          <span>{{ preview ? '以下显示前 20 行，点击“继续核对并导入”确认' : '上传前可先对照下方字段准备资料' }}</span>
+          <b>{{ preview ? preview.fileName + ' · 共 ' + preview.rowTotal + ' 行' + (preview.sales && (preview.sales.duplicateRowCount ?? 0) > 0 ? `（已清重复 ${preview.sales.duplicateRowCount} 行 · 待导入 ${preview.sales.newRowCount} 行）` : '') : '待导入明细' }}</b>
+          <span>{{ preview ? '以下显示待导入的前 20 行，点击“继续核对并导入”确认' : '上传前可先对照下方字段准备资料' }}</span>
         </div>
         <el-table :data="previewDataRows" border size="small" max-height="330">
           <el-table-column v-for="column in preview ? previewColumns : activeChannel.columns" :key="column" :prop="column" :label="column" min-width="125" show-overflow-tooltip />
@@ -782,7 +783,11 @@ function showNewProducts(products: import('@/api/imports').AutoCreatedProduct[])
       :close-on-click-modal="!confirming" :close-on-press-escape="!confirming" :show-close="!confirming">
       <template v-if="preview">
         <div class="mb-8px text-13px">
-          共 <b>{{ preview.rowTotal }}</b> 行(下方仅预览前 20 行)· 类型:{{ preview.fileType }}
+          共 <b>{{ preview.rowTotal }}</b> 行
+          <template v-if="preview.sales && (preview.sales.duplicateRowCount ?? 0) > 0">
+            · 已清除重复 <b style="color: #d97706">{{ preview.sales.duplicateRowCount }}</b> 行 · 待导入 <b style="color: #24563e">{{ preview.sales.newRowCount }}</b> 行
+          </template>
+          (下方仅预览前 20 行)· 类型:{{ preview.fileType }}
         </div>
         <el-alert v-if="preview.fileType === '系统补货记录'" type="info" :closable="false" class="mb-8px">
           每个货道是一条记录，同一商品补多个货道会合计转移数量；“商品价格”是销售价，不会当作采购成本。上传预览不入账，确认导入后才生成出库上架或退库单。

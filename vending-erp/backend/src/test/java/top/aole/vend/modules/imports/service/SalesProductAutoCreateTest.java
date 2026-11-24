@@ -260,6 +260,67 @@ class SalesProductAutoCreateTest {
         assertEquals(1,commit(p).getRowOk());
     }
 
+    @Test void overlappingSalesOrdersAreClearedInPreviewAndCommitWithoutDuplicating() throws Exception {
+        // 第1次导入：订单 ORD-1（两品一单）、ORD-2（单品）
+        CommitResp first = commit(upload(excel(YUANQI,
+                yuanqi("ORD-1", "冰茶柠檬500ml", "1", "4.5"),
+                yuanqi("ORD-1", "冰茶柚子500ml", "2", "9.0"),
+                yuanqi("ORD-2", "东鹏特饮500ml", "1", "5.0"))));
+        assertEquals(3, first.getRowOk());
+        assertEquals(0, first.getRowDup());
+        assertEquals(3, count("sale"));
+
+        // 第2次导入：包含上次已导入的 ORD-1、重复多次的 ORD-2（带空格/前导引号）、同表重复行、以及全新订单 ORD-3（两品）和 ORD-4
+        String[] dupOrd2Spaced = yuanqi(" 'ORD-2 ", "东鹏特饮500ml", "1", "5.0");
+        String[] dupOrd2Extra = yuanqi("ORD-2", "东鹏特饮500ml", "1", "5.0");
+        String[] newOrd3A = yuanqi("ORD-3", "冰茶柠檬500ml", "1", "4.5");
+        String[] newOrd3ACopy = yuanqi("ORD-3", "冰茶柠檬500ml", "1", "4.5");
+        String[] newOrd3B = yuanqi("ORD-3", "青梅绿茶500ml", "2", "6.0");
+        String[] newOrd4 = yuanqi("ORD-4", "东鹏特饮500ml", "3", "15.0");
+        PreviewResp secondPreview = upload(excel(YUANQI,
+                yuanqi("ORD-1", "冰茶柠檬500ml", "1", "4.5"),
+                dupOrd2Spaced,
+                dupOrd2Extra,
+                newOrd3A,
+                newOrd3ACopy,
+                newOrd3B,
+                newOrd4));
+
+        SalesPreview sp = secondPreview.getSales();
+        assertEquals(7, sp.getRawRowCount());
+        assertEquals(4, sp.getDuplicateRowCount()); // ORD-1(1) + ORD-2(2) + ORD-3同表重复(1)
+        assertEquals(3, sp.getNewRowCount());       // ORD-3A + ORD-3B + ORD-4
+        assertEquals(2, sp.getOrderCount());        // ORD-3, ORD-4
+        assertEquals(0, sp.getQuantity().compareTo(new java.math.BigDecimal("6")));
+        assertEquals(0, sp.getAmount().compareTo(new java.math.BigDecimal("25.5")));
+        assertEquals(0, sp.getDuplicateAmount().compareTo(new java.math.BigDecimal("19.0")));
+        assertEquals(3, secondPreview.getSourcePreviewRows().size());
+        assertEquals("ORD-3", secondPreview.getSourcePreviewRows().get(0).get("订单编号"));
+        assertEquals(4, sp.getDuplicatePreviewRows().size());
+        assertTrue(sp.getSampleDuplicateOrders().contains("ORD-1"));
+        assertTrue(sp.getSampleDuplicateOrders().contains("ORD-2"));
+
+        CommitResp second = commit(secondPreview);
+        assertEquals(3, second.getRowOk());
+        assertEquals(4, second.getRowDup());
+        assertEquals(0, second.getRowFail());
+        assertEquals(6, count("sale"));
+        assertEquals(0, db.queryForObject("SELECT sum(amount) FROM sale", java.math.BigDecimal.class)
+                .compareTo(new java.math.BigDecimal("44.0")));
+
+        // 退款行使用相同订单编号仍可正常导入，不与正常单混淆
+        String[] refundOrd2 = row("ORD-2", "东鹏特饮500ml");
+        refundOrd2[3] = "-5.0";
+        refundOrd2[5] = "退款订单";
+        PreviewResp refundPreview = upload(excel(HEADERS, row("ORD-2", "东鹏特饮500ml"), refundOrd2));
+        assertEquals(1, refundPreview.getSales().getDuplicateRowCount());
+        assertEquals(1, refundPreview.getSales().getNewRowCount());
+        CommitResp refundCommit = commit(refundPreview);
+        assertEquals(1, refundCommit.getRowOk());
+        assertEquals(1, refundCommit.getRowDup());
+        assertEquals(7, count("sale"));
+    }
+
     /** 仅本地传入用户文件，使用隔离 H2，不提交业务附件。 */
     @Test void suppliedSalesWorkbookImportsAllLinesAndRepeatsWithoutDoubleCounting() throws Exception {
         String source=System.getProperty("vend.test.salesFile"); Assumptions.assumeTrue(source!=null);

@@ -166,7 +166,7 @@ public class ImportService {
         ParsedSheet sheet = parseUpload(fileType, content);
         boolean yuanqi = ImportBatch.TYPE_SALE.equals(fileType) && SalesSheetNormalizer.isYuanqi(sheet);
         List<String> sourceHeaders = new ArrayList<>(sheet.getHeaders());
-        List<Map<String, String>> sourceRows = sourcePreview(sheet);
+        List<Map<String, String>> allSourceRows = ImportBatch.TYPE_SALE.equals(fileType) ? snapshotCells(sheet) : null;
         normalizeReplenishHeaders(fileType, sheet);
 
         PreviewResp resp = new PreviewResp();
@@ -174,8 +174,8 @@ public class ImportService {
         resp.setFileType(fileType);
         fillPreview(spec, sheet, resp);
         if (ImportBatch.TYPE_SALE.equals(fileType)) {
-            resp.setSourceHeaders(sourceHeaders); resp.setSourcePreviewRows(sourceRows);
-            fillSalesPreview(sheet, resp, yuanqi);
+            resp.setSourceHeaders(sourceHeaders);
+            fillSalesPreview(sheet, allSourceRows, resp, yuanqi);
         }
 
         // 暂存原始文件,等第②步确认
@@ -197,23 +197,132 @@ public class ImportService {
                 : excelParser.parse(new ByteArrayInputStream(content));
     }
 
-    private List<Map<String, String>> sourcePreview(ParsedSheet sheet) {
-        List<Map<String, String>> rows = new ArrayList<>();
-        for (int i = 0; i < Math.min(20, sheet.getRows().size()); i++) rows.add(new LinkedHashMap<>(sheet.getRows().get(i).getCells()));
+    private List<Map<String, String>> snapshotCells(ParsedSheet sheet) {
+        List<Map<String, String>> rows = new ArrayList<>(sheet.getRows().size());
+        for (ParsedSheet.Row row : sheet.getRows()) {
+            rows.add(new LinkedHashMap<>(row.getCells()));
+        }
         return rows;
     }
 
-    /** 表格合计与档案匹配只做预检；所有写入仍在确认事务中。 */
-    private void fillSalesPreview(ParsedSheet sheet, PreviewResp resp, boolean yuanqi) {
+    static String normalizeOrderNo(String raw) {
+        if (raw == null) return null;
+        String cleaned = raw.replaceAll("[\\u200B-\\u200D\\uFEFF]", "")
+                .replace('\u00A0', ' ')
+                .replace('\u3000', ' ')
+                .trim();
+        if (cleaned.startsWith("'")) {
+            cleaned = cleaned.substring(1).trim();
+        }
+        return cleaned.isEmpty() ? null : cleaned;
+    }
+
+    static String baseOrderNo(String orderNo) {
+        String normalized = normalizeOrderNo(orderNo);
+        return normalized == null ? null : normalized.replaceFirst("#\\d+$", "");
+    }
+
+    private Set<String> loadExistingBaseOrderKeys(Set<String> exactKeysOut) {
+        Set<String> baseKeys = new HashSet<>();
+        List<Map<String, Object>> existing = queryMapper.existingSaleKeys();
+        if (existing == null) return baseKeys;
+        for (Map<String, Object> row : existing) {
+            if (row == null) continue;
+            Object orderObj = row.get("orderNo");
+            if (orderObj == null) continue;
+            String normalized = normalizeOrderNo(orderObj.toString());
+            if (normalized == null) continue;
+            String base = baseOrderNo(normalized);
+            Object typeObj = row.get("orderType");
+            String orderType = typeObj == null ? "正常" : normalizeOrderType(typeObj.toString());
+            if (base != null) baseKeys.add(base + "\u0001" + orderType);
+            if (exactKeysOut != null) exactKeysOut.add(normalized + "\u0001" + orderType);
+        }
+        return baseKeys;
+    }
+
+    private static BigDecimal tryParseDecimal(String text) {
+        if (text == null || text.trim().isEmpty()) return null;
+        try {
+            return new BigDecimal(text.replace(",", "").trim());
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private static String normalizeNumText(String text) {
+        BigDecimal num = tryParseDecimal(text);
+        return num != null ? num.stripTrailingZeros().toPlainString() : StrUtil.nullToEmpty(StrUtil.trim(text));
+    }
+
+    /** 同表完全一致的重复行指纹（不误伤同一订单的不同商品、不同货道或不同实收/优惠行）。 */
+    private static String saleLineFingerprint(String baseOrder, String orderType, ParsedSheet.Row row) {
+        return String.join("\u0001",
+                baseOrder,
+                orderType,
+                StrUtil.nullToEmpty(StrUtil.trim(row.get("设备ID"))),
+                StrUtil.nullToEmpty(StrUtil.trim(row.get("货道号"))),
+                StrUtil.nullToEmpty(StrUtil.trim(row.get("商品条形码"))),
+                StrUtil.nullToEmpty(StrUtil.trim(row.get("商品名称"))),
+                normalizeNumText(row.get("出货数量")),
+                normalizeNumText(row.get("商品金额(元)")),
+                normalizeNumText(row.get("优惠券抵扣金额")),
+                StrUtil.nullToEmpty(StrUtil.trim(row.get("出货时间"))),
+                StrUtil.nullToEmpty(StrUtil.trim(row.get("支付方式"))));
+    }
+
+    /** 表格合计与档案匹配只做预检；按订单编号与历史已导入销售记录核对，先清除重复再统计待导入数据。 */
+    private void fillSalesPreview(ParsedSheet sheet, List<Map<String, String>> allSourceRows, PreviewResp resp, boolean yuanqi) {
         ImportDtos.SalesPreview result = new ImportDtos.SalesPreview();
         result.setFormat(yuanqi ? "元气森林销售表" : "出货明细");
+        result.setRawRowCount(sheet.getRows().size());
         Map<String, Long> machines = loadMachines();
+        Set<String> existingBaseKeys = loadExistingBaseOrderKeys(null);
+        Set<String> seenInFileLines = new HashSet<>();
         Set<String> orderIds = new HashSet<>(), deviceIds = new HashSet<>(), missing = new LinkedHashSet<>();
+        Set<String> duplicateOrders = new LinkedHashSet<>();
         Map<String, ImportDtos.SalesProductPreview> products = new LinkedHashMap<>();
+        List<Map<String, String>> newSourcePreview = new ArrayList<>();
+        List<Map<String, String>> newNormalizedPreview = new ArrayList<>();
         LocalDateTime from = null, to = null;
-        for (ParsedSheet.Row row : sheet.getRows()) {
-            String name = row.get("商品名称"), device = row.get("设备ID"), order = row.get("订单号");
-            if (order != null) orderIds.add(order);
+        int newRows = 0, duplicateRows = 0;
+
+        for (int i = 0; i < sheet.getRows().size(); i++) {
+            ParsedSheet.Row row = sheet.getRows().get(i);
+            Map<String, String> sourceCell = allSourceRows != null && i < allSourceRows.size()
+                    ? allSourceRows.get(i) : new LinkedHashMap<>(row.getCells());
+            BigDecimal rawQty = tryParseDecimal(row.get("出货数量"));
+            BigDecimal rawAmt = tryParseDecimal(row.get("商品金额(元)"));
+            if (rawQty != null) result.setRawQuantity(result.getRawQuantity().add(rawQty));
+            if (rawAmt != null) result.setRawAmount(result.getRawAmount().add(rawAmt));
+
+            String orderRaw = normalizeOrderNo(row.get("订单号"));
+            String baseOrder = baseOrderNo(orderRaw);
+            String rawType = row.get("订单类型");
+            if (baseOrder != null && rawType != null) {
+                String orderType = normalizeOrderType(rawType);
+                boolean dupExisting = existingBaseKeys.contains(baseOrder + "\u0001" + orderType);
+                boolean dupInFile = !dupExisting && !seenInFileLines.add(saleLineFingerprint(baseOrder, orderType, row));
+                if (dupExisting || dupInFile) {
+                    duplicateRows++;
+                    duplicateOrders.add(baseOrder);
+                    if (rawQty != null) result.setDuplicateQuantity(result.getDuplicateQuantity().add(rawQty));
+                    if (rawAmt != null) result.setDuplicateAmount(result.getDuplicateAmount().add(rawAmt));
+                    if (result.getDuplicatePreviewRows().size() < 20) {
+                        Map<String, String> dupCopy = new LinkedHashMap<>(sourceCell);
+                        dupCopy.put("__dupReason", dupExisting ? "历史已导入" : "表内重复");
+                        result.getDuplicatePreviewRows().add(dupCopy);
+                    }
+                    continue;
+                }
+            }
+
+            newRows++;
+            if (newSourcePreview.size() < 20) newSourcePreview.add(sourceCell);
+            if (newNormalizedPreview.size() < 20) newNormalizedPreview.add(row.getCells());
+
+            String name = row.get("商品名称"), device = row.get("设备ID");
+            if (baseOrder != null) orderIds.add(baseOrder);
             if (device != null) {
                 deviceIds.add(device);
                 if (!machines.containsKey(device)) missing.add(device);
@@ -249,10 +358,20 @@ public class ImportService {
                 if (result.getIssues().size() < 20) result.getIssues().add("第" + row.getRowNo() + "行：" + e.getMessage());
             }
         }
+        result.setNewRowCount(newRows);
+        result.setDuplicateRowCount(duplicateRows);
+        result.setDuplicateOrderCount(duplicateOrders.size());
+        int sampleLimit = 0;
+        for (String dupOrder : duplicateOrders) {
+            if (sampleLimit++ >= 20) break;
+            result.getSampleDuplicateOrders().add(dupOrder);
+        }
         result.setOrderCount(orderIds.size()); result.setMachineCount(deviceIds.size()); result.setProductCount(products.size());
         result.getMissingMachines().addAll(missing); result.getProducts().addAll(products.values());
         result.setDateFrom(from == null ? null : from.format(DT)); result.setDateTo(to == null ? null : to.format(DT));
         salesProducts.previewMatches(result.getProducts());
+        resp.setSourcePreviewRows(newSourcePreview);
+        resp.setPreviewRows(newNormalizedPreview);
         resp.setSales(result);
         if (yuanqi) resp.getWarnings().add("已识别元气森林销售表，无需修改表头；按订单时间记销售，支付金额作为实收，优惠券仅展示、不重复加计。未填订单类型的正常正数行自动识别。");
     }
@@ -389,7 +508,7 @@ public class ImportService {
         ParsedSheet sheet = parseUpload(pending.getFileType(), FileUtil.readBytes(tmp));
         boolean yuanqi = ImportBatch.TYPE_SALE.equals(pending.getFileType()) && SalesSheetNormalizer.isYuanqi(sheet);
         List<String> sourceHeaders = new ArrayList<>(sheet.getHeaders());
-        List<Map<String, String>> sourceRows = sourcePreview(sheet);
+        List<Map<String, String>> allSourceRows = ImportBatch.TYPE_SALE.equals(pending.getFileType()) ? snapshotCells(sheet) : null;
         normalizeReplenishHeaders(pending.getFileType(), sheet);
         remapHeaders(sheet, columnMap);
         PreviewResp resp = new PreviewResp();
@@ -398,8 +517,8 @@ public class ImportService {
         resp.setFileType(pending.getFileType());
         fillPreview(spec, sheet, resp);
         if (ImportBatch.TYPE_SALE.equals(pending.getFileType())) {
-            resp.setSourceHeaders(sourceHeaders); resp.setSourcePreviewRows(sourceRows);
-            fillSalesPreview(sheet, resp, yuanqi);
+            resp.setSourceHeaders(sourceHeaders);
+            fillSalesPreview(sheet, allSourceRows, resp, yuanqi);
         }
         return resp;
     }
@@ -602,9 +721,8 @@ public class ImportService {
         Set<Long> newProductIds = new HashSet<>();
         Map<String, Long> machineByDevice = loadMachines();
         Set<String> existingKeys = new HashSet<>();
-        for (Map<String, Object> row : queryMapper.existingSaleKeys()) {
-            existingKeys.add(row.get("orderNo") + "\u0001" + row.get("orderType"));
-        }
+        Set<String> existingBaseKeys = loadExistingBaseOrderKeys(existingKeys);
+        Set<String> seenInFileLines = new HashSet<>();
         Map<Long, BigDecimal> costCache = new HashMap<>();
         Map<String, Boolean> lockCache = new HashMap<>();
         Map<String, Integer> orderOccurrence = new HashMap<>();
@@ -618,12 +736,24 @@ public class ImportService {
 
         for (ParsedSheet.Row row : sheet.getRows()) {
             try {
-                String orderNoRaw = required(row, "订单号");
+                String orderNoRaw = normalizeOrderNo(required(row, "订单号"));
+                if (orderNoRaw == null) {
+                    throw new RowException(ImportError.TYPE_FORMAT, "「订单号」为空");
+                }
+                String baseOrder = baseOrderNo(orderNoRaw);
+                String orderTypeRaw = required(row, "订单类型");
+                String orderType = normalizeOrderType(orderTypeRaw);
+                String baseKey = baseOrder + "\u0001" + orderType;
+                // 与历史已导入销售记录对比订单编号：凡历史已导入过的订单编号或表内完全重复行直接清除跳过。
+                if (existingBaseKeys.contains(baseKey) || !seenInFileLines.add(saleLineFingerprint(baseOrder, orderType, row))) {
+                    dup++;
+                    continue;
+                }
+
                 String name = required(row, "商品名称");
                 BigDecimal qty = parseDecimal(required(row, "出货数量"), "出货数量");
                 BigDecimal amount = parseDecimal(required(row, "商品金额(元)"), "商品金额(元)");
                 String deviceId = required(row, "设备ID");
-                String orderTypeRaw = required(row, "订单类型");
                 LocalDateTime bizTime = parseDateTime(required(row, "出货时间"), "出货时间");
                 String barcode = row.get("商品条形码");
                 if (name.trim().isEmpty() || name.length() > 128 || (barcode != null && barcode.length() > 64)) {
@@ -638,13 +768,12 @@ public class ImportService {
                     continue;
                 }
 
-                String orderType = normalizeOrderType(orderTypeRaw);
                 if (("正常".equals(orderType) || "兑换".equals(orderType)) && (qty.signum() <= 0 || amount.signum() < 0)) {
                     throw new RowException(ImportError.TYPE_FORMAT, "正常销售数量须大于 0、金额不能为负；退款请填写退款订单类型");
                 }
-                // 一单多行:同订单号第 2+ 行加确定性后缀 #k(按文件内出现次序,重复导入同文件后缀一致 → 幂等)
-                int occ = orderOccurrence.merge(orderNoRaw, 1, Integer::sum);
-                String orderNo = occ == 1 ? orderNoRaw : orderNoRaw + "#" + occ;
+                // 新订单一单多行:按(基础订单号+订单类型)计次加确定性后缀 #k，同单不同品保留、退款与正常单不互串号
+                int occ = orderOccurrence.merge(baseKey, 1, Integer::sum);
+                String orderNo = occ == 1 ? baseOrder : baseOrder + "#" + occ;
 
                 String dedupKey = orderNo + "\u0001" + orderType;
                 if (existingKeys.contains(dedupKey)) {

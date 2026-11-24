@@ -148,4 +148,77 @@ class PurchaseWorkbookTest {
         assertEquals(37,checked.getDays().stream().mapToInt(d -> d.getLines().size()).sum());
         verify(products,never()).insert(any()); verify(aliases,never()).updateById(any());
     }
+
+    @Test void parsesMultiSectionDeliverySheetLikeScreenshotWithUnitHeadersSubtotalsAndNotes() throws Exception {
+        catalog.add(product(30, "东鹏特饮500ml"));
+        catalog.get(catalog.size() - 1).setBoxSpec(new BigDecimal("24"));
+        catalog.add(product(31, "青梅绿茶500ml"));
+        catalog.add(product(32, "达利园乐虎功能饮料380ml"));
+        byte[] bytes;
+        try (Workbook wb = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Sheet s = wb.createSheet("送货单明细整理");
+            s.createRow(0).createCell(0).setCellValue("送货单明细整理");
+            s.createRow(2).createCell(0).setCellValue("送货单一（No.427920  2026-11-09  收货单位：云仓）");
+            String[] cols = {"产品名称", "整件规格", "总件数", "采购数量", "整件价格（元）", "总价格（元）"};
+            org.apache.poi.ss.usermodel.Row h1 = s.createRow(3);
+            for (int c = 0; c < cols.length; c++) h1.createCell(c).setCellValue(cols[c]);
+            String[][] s1 = {
+                {"外星人电解质水", "15", "5", "75", "60", "300"},
+                {"东鹏特饮", "24", "5", "120", "82", "410"},
+                {"青梅绿茶500ml", "15", "5", "75", "30", "150"},
+                {"乐虎", "15", "10", "150", "50", "500"},
+                {"合计", "", "", "420", "", "1360"},
+                {"注：手写金额 1360 元，与明细合计一致。", "", "", "", "", ""}
+            };
+            for (int i = 0; i < s1.length; i++) {
+                org.apache.poi.ss.usermodel.Row r = s.createRow(4 + i);
+                for (int c = 0; c < s1[i].length; c++) if (!s1[i][c].isEmpty()) r.createCell(c).setCellValue(s1[i][c]);
+            }
+            s.createRow(11).createCell(0).setCellValue("送货单二（No.427946  2026-11-17  收货单位：云仓）");
+            org.apache.poi.ss.usermodel.Row h2 = s.createRow(12);
+            for (int c = 0; c < cols.length; c++) h2.createCell(c).setCellValue(cols[c]);
+            String[][] s2 = {
+                {"外星人电解质水(西柚)", "15", "4", "60", "60", "240"},
+                {"东鹏特饮", "24", "5", "120", "82", "410"},
+                {"合计", "", "", "180", "", "650"},
+                {"注：手写金额 650 元，请核对原件。", "", "", "", "", ""}
+            };
+            for (int i = 0; i < s2.length; i++) {
+                org.apache.poi.ss.usermodel.Row r = s.createRow(13 + i);
+                for (int c = 0; c < s2[i].length; c++) if (!s2[i][c].isEmpty()) r.createCell(c).setCellValue(s2[i][c]);
+            }
+            wb.write(out);
+            bytes = out.toByteArray();
+        }
+        Preview p = service.parse(new MockMultipartFile("file", "送货单明细整理.xlsx", "", bytes));
+        assertTrue(p.getErrors().isEmpty(), p.getErrors().toString());
+        assertEquals("送货单明细整理", p.getSheetTitle());
+        assertEquals(6, p.getRows().size());
+        assertEquals(2, p.getSkippedSubtotals());
+        assertEquals(2, p.getSections().size());
+        assertEquals("送货单一（No.427920  2026-11-09  收货单位：云仓）", p.getSections().get(0).getTitle());
+        assertEquals("2026-11-09", p.getSections().get(0).getBizDate());
+        equal("420", p.getSections().get(0).getTotalQty());
+        equal("1360", p.getSections().get(0).getTotalAmount());
+        assertEquals("注：手写金额 1360 元，与明细合计一致。", p.getSections().get(0).getNote());
+        assertEquals("送货单二（No.427946  2026-11-17  收货单位：云仓）", p.getSections().get(1).getTitle());
+        assertEquals("2026-11-17", p.getSections().get(1).getBizDate());
+        equal("180", p.getSections().get(1).getTotalQty());
+        equal("650", p.getSections().get(1).getTotalAmount());
+
+        // 绿色自动匹配：东鹏特饮（去容量唯一命中）与 青梅绿茶500ml（精确命中）
+        SourceRow dongpeng = p.getRows().get(1);
+        assertEquals("matched", dongpeng.getMatchStatus());
+        assertEquals(30L, dongpeng.getMatchedProductId());
+        SourceRow qingmei = p.getRows().get(2);
+        assertEquals("matched", qingmei.getMatchStatus());
+        assertEquals(31L, qingmei.getMatchedProductId());
+        // 红色未匹配：外星人电解质水（多口味）与 乐虎（简称，但候选包含达利园乐虎）
+        SourceRow alien = p.getRows().get(0);
+        assertEquals("unmatched", alien.getMatchStatus());
+        assertFalse(alien.getCandidates().isEmpty());
+        SourceRow lehu = p.getRows().get(3);
+        assertEquals("unmatched", lehu.getMatchStatus());
+        assertTrue(lehu.getCandidates().stream().anyMatch(c -> c.getProductId() == 32L), "短名称乐虎应带出候选");
+    }
 }

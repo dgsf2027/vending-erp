@@ -33,6 +33,7 @@ public final class PurchaseSimpleDtos {
         private String batchKey;
         private Long supplierId;
         private String defaultDate;
+        private boolean rememberBindings;
         private List<GroupChoice> groups = new ArrayList<>();
         private List<RowChoice> rows = new ArrayList<>();
     }
