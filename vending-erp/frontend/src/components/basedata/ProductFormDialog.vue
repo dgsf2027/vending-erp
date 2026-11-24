@@ -9,13 +9,14 @@ import { createProduct, updateProduct, type Product } from '@/api/basedata'
  */
 const props = defineProps<{
   visible: boolean
-  /** 传入 = 编辑;不传 = 新建 */
+  /** 传入带 id = 编辑;不传或无 id = 新建（无 id 时作为预填初值） */
   product?: Product | null
+  submitText?: string
 }>()
 
 const emit = defineEmits<{
   (e: 'update:visible', value: boolean): void
-  (e: 'saved'): void
+  (e: 'saved', product?: Product): void
 }>()
 
 const CATEGORIES = ['饮料', '泡面', '面包', '卤味', '槟榔', '零食', '其他']
@@ -66,15 +67,16 @@ async function save() {
       refPrice: num(form.refPrice),
       minDisplayQty: num(form.minDisplayQty),
     }
+    let saved: Product
     if (isEdit.value && props.product?.id) {
-      await updateProduct(props.product.id, payload)
+      saved = await updateProduct(props.product.id, payload)
       ElMessage.success('已保存(改动已记操作日志;售价变化另记改价留痕)')
     } else {
-      const saved = await createProduct(payload)
+      saved = await createProduct(payload)
       ElMessage.success('商品已建档，编码：' + saved.skuCode)
     }
     emit('update:visible', false)
-    emit('saved')
+    emit('saved', saved)
   } finally {
     saving.value = false
   }
@@ -86,6 +88,8 @@ async function save() {
     :model-value="props.visible"
     :title="isEdit ? `编辑商品 · ${form.skuCode}` : '新建商品'"
     width="620px"
+    append-to-body
+    :close-on-click-modal="false"
     @update:model-value="(v: boolean) => emit('update:visible', v)"
   >
     <el-form label-width="110px">
@@ -160,7 +164,7 @@ async function save() {
     </el-form>
     <template #footer>
       <el-button @click="emit('update:visible', false)">取消</el-button>
-      <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+      <el-button type="primary" :loading="saving" @click="save">{{ props.submitText || '保存' }}</el-button>
     </template>
   </el-dialog>
 </template>

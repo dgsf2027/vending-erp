@@ -2,8 +2,9 @@
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import ProductSelect from '@/components/basedata/ProductSelect.vue'
+import ProductFormDialog from '@/components/basedata/ProductFormDialog.vue'
 import LegacyDialog from './PurchaseWorkbookLegacyDialog.vue'
-import { getProduct, type Supplier } from '@/api/basedata'
+import { getProduct, type Product, type Supplier } from '@/api/basedata'
 import {
   previewSimplePurchase, commitSimplePurchase, purchaseWorkbookTemplate,
   type PurchaseSimplePreview, type PurchaseStockChoice, type PurchaseStockGroup,
@@ -34,6 +35,37 @@ const filterMode = ref<'all' | 'unmatched'>('all')
 const showSharedPanel = ref(false)
 const rememberBindings = ref(true)
 const completed = ref<number[]>([])
+const createVisible = ref(false)
+const creatingRow = ref<PurchaseWorkbookRow | null>(null)
+const createDraft = ref<Product | null>(null)
+
+function openCreateProduct(row: PurchaseWorkbookRow) {
+  creatingRow.value = row
+  const unitCost = row.unitPrice != null && Number.isFinite(Number(row.unitPrice))
+    ? Number(Number(row.unitPrice).toFixed(2))
+    : null
+  createDraft.value = {
+    skuCode: row.skuCode || '',
+    productName: row.sourceName || '',
+    barcode: '',
+    category: '',
+    unit: '瓶',
+    boxSpec: row.boxSpec != null && Number(row.boxSpec) > 0 ? Number(row.boxSpec) : 1,
+    shelfLifeDays: null,
+    refCost: unitCost,
+    refPrice: null,
+    minDisplayQty: null,
+    remark: '采购表格导入时新建',
+  }
+  createVisible.value = true
+}
+
+function onProductCreated(saved?: Product) {
+  const targetRow = creatingRow.value
+  creatingRow.value = null
+  if (!targetRow || !saved?.id) return
+  bindRow(targetRow, saved.id, { skuCode: saved.skuCode, productName: saved.productName })
+}
 
 watch(() => props.modelValue, open => {
   if (open) advanced.value = props.initialKind === 'order'
@@ -469,7 +501,7 @@ async function download() {
                   <th class="col-num">采购数量</th>
                   <th class="col-num">整件价格（元）</th>
                   <th class="col-num">总价格（元）</th>
-                  <th class="col-match">系统商品匹配 / 手动绑定</th>
+                  <th class="col-match">系统商品匹配 / 绑定或新建</th>
                 </tr>
               </thead>
               <tbody>
@@ -529,6 +561,16 @@ async function download() {
                               @update:model-value="(id: number | null) => bindRow(row, id)"
                             />
                           </div>
+                          <el-button
+                            type="primary"
+                            plain
+                            size="small"
+                            class="create-product-btn"
+                            :disabled="busy"
+                            @click="openCreateProduct(row)"
+                          >
+                            ＋ 新建商品
+                          </el-button>
                           <el-button v-if="editingRows[row.rowNo]" link size="small" @click="editingRows[row.rowNo] = false">完成</el-button>
                           <el-button v-if="rowChoices[row.rowNo] && isAutoMatched(row)" link size="small" @click="resetRowBinding(row)">恢复自动</el-button>
                         </div>
@@ -579,7 +621,7 @@ async function download() {
     <template #footer>
       <span v-if="data && !done" class="footer-hint" :class="{ 'hint-red': unmatchedCount > 0 || hasBlockingRowErrors }">
         <template v-if="preview?.errors.length || hasBlockingRowErrors">原表存在数量或金额核对错误，请先核查红色提示</template>
-        <template v-else-if="unmatchedCount > 0">还有 {{ unmatchedCount }} 行红色未匹配，请在表格右侧手动绑定后入库</template>
+        <template v-else-if="unmatchedCount > 0">还有 {{ unmatchedCount }} 行红色未匹配，请在表格右侧手动绑定或新建商品后入库</template>
         <template v-else-if="!supplierId">全部已匹配为绿色 ✓，请选择供应商后确认入库</template>
         <template v-else-if="needsDefaultDate && !defaultDate">请补充采购日期后确认入库</template>
         <template v-else>全部 {{ allRows.length }} 行已匹配为绿色 ✓，确认后按送货/采购日期直接入库</template>
@@ -590,6 +632,13 @@ async function download() {
       </el-button>
     </template>
   </el-dialog>
+
+  <ProductFormDialog
+    v-model:visible="createVisible"
+    :product="createDraft"
+    submit-text="保存并绑定"
+    @saved="onProductCreated"
+  />
 </template>
 
 <style scoped>
@@ -721,7 +770,7 @@ async function download() {
 }
 .col-name { min-width: 165px; }
 .col-num { width: 88px; }
-.col-match { min-width: 340px; }
+.col-match { min-width: 400px; }
 
 .cell-name { text-align: center; }
 .source-name-main { font-weight: 600; color: #1f2937; }
@@ -810,7 +859,11 @@ tr.sheet-total-row td {
 }
 .bind-select-wrap {
   flex: 1;
-  min-width: 200px;
+  min-width: 190px;
+}
+.create-product-btn {
+  flex-shrink: 0;
+  margin-left: 0 !important;
 }
 .candidate-chips {
   display: flex;
