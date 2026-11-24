@@ -248,7 +248,131 @@ export interface MoneyLightsResp {
   redTotal: number
 }
 
+// ---------- 三维度经营驾驶舱(月度/年度/经营总览) ----------
+
+export type DashboardScope = 'month' | 'year' | 'overall'
+
+export interface DashboardTrendRow {
+  key: string
+  label: string
+  salesAmt: number
+  salesQty: number
+  grossProfit: number | null
+  marginPct: number | null
+  purchaseAmt: number
+  orderCount: number
+}
+
+export interface DashboardMachineRow {
+  machineId: number
+  code: string
+  name: string
+  salesAmt: number
+  salesQty: number
+  orderCount: number
+  costAmt: number | null
+  grossProfit: number | null
+  marginPct: number | null
+  sharePct: number | null
+  dailyAvgAmt: number | null
+  noCostSkuCount: number
+}
+
+export interface DashboardCategoryRow {
+  category: string
+  salesAmt: number
+  salesQty: number
+  grossProfit: number | null
+  marginPct: number | null
+  sharePct: number | null
+  skuCount: number
+}
+
+export interface DashboardProductRow {
+  productId: number | null
+  code: string
+  name: string
+  category: string
+  salesQty: number
+  salesAmt: number
+  costAmt: number | null
+  grossProfit: number | null
+  marginPct: number | null
+  sharePct: number | null
+  hasCost: boolean
+}
+
+export interface DashboardPayRow {
+  method: string
+  orderCount: number
+  salesAmt: number
+  sharePct: number | null
+}
+
+export interface DashboardResp {
+  scope: DashboardScope
+  period: string
+  periodLabel: string
+  months: string[]
+  years: string[]
+  dataAsOf: string | null
+  firstBizDate: string | null
+  lastBizDate: string | null
+  activeDays: number
+
+  salesAmt: number
+  salesQty: number
+  orderCount: number
+  avgOrderAmt: number | null
+  dailyAvgSales: number | null
+  refundAmt: number
+  refundCount: number
+  exchangeCount: number
+
+  costAmt: number | null
+  grossProfit: number | null
+  marginPct: number | null
+  costedSalesAmt: number
+  noCostSkuCount: number
+
+  purchaseAmt: number
+  purchaseQty: number
+  purchaseDocCount: number
+
+  platformFeeAmt: number
+  expenseAmt: number
+  lossAmt: number
+  compensatedAmt: number
+  netLossAmt: number
+  costAdjustAmt: number
+  otherIncomeAmt: number
+  operatingProfit: number | null
+  operatingMarginPct: number | null
+
+  activeMachineCount: number
+  totalMachineCount: number
+  soldSkuCount: number
+
+  compareLabel: string | null
+  prevSalesAmt: number | null
+  salesGrowthPct: number | null
+  prevGrossProfit: number | null
+  profitGrowthPct: number | null
+  prevPurchaseAmt: number | null
+  purchaseGrowthPct: number | null
+  prevOrderCount: number | null
+  orderGrowthPct: number | null
+
+  trend: DashboardTrendRow[]
+  machines: DashboardMachineRow[]
+  categories: DashboardCategoryRow[]
+  topProducts: DashboardProductRow[]
+  payMethods: DashboardPayRow[]
+}
+
 export const reportApi = {
+  dashboard: (scope: DashboardScope = 'month', period?: string) =>
+    request.get<never, DashboardResp>('/v1/report/dashboard', { params: { scope, period } }),
   grossMargin: (month: string | undefined, dim: 'sku' | 'machine') =>
     request.get<never, GrossMarginResp>('/v1/report/gross-margin', { params: { month, dim } }),
   moneyLights: () => request.get<never, MoneyLightsResp>('/v1/report/money-lights'),

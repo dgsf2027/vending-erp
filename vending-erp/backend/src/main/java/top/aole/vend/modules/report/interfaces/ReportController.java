@@ -12,7 +12,9 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import top.aole.vend.common.result.R;
 import top.aole.vend.modules.basedata.interfaces.Operators;
+import top.aole.vend.modules.report.dto.DashboardDtos;
 import top.aole.vend.modules.report.dto.ReportDtos;
+import top.aole.vend.modules.report.service.DashboardOverviewService;
 import top.aole.vend.modules.report.service.MoneyLightsService;
 import top.aole.vend.modules.report.service.ReportService;
 
@@ -29,6 +31,15 @@ public class ReportController {
 
     private final ReportService reportService;
     private final MoneyLightsService moneyLightsService;
+    private final DashboardOverviewService dashboardOverviewService;
+
+    @ApiOperation("经营驾驶舱三维度聚合:scope=month(默认)|year|overall, period=YYYY-MM|YYYY")
+    @GetMapping("/dashboard")
+    public R<DashboardDtos.DashboardResp> dashboard(
+            @RequestParam(defaultValue = "month") String scope,
+            @RequestParam(required = false) String period) {
+        return R.ok(dashboardOverviewService.overview(scope, period));
+    }
 
     @ApiOperation("毛利报表:按月 × SKU/机器(dim=sku|machine);无成本 SKU 毛利显「—(成本待补)」")
     @GetMapping("/gross-margin")

@@ -37,10 +37,12 @@ public final class ReportDtos {
     @Data
     public static class SaleEvent {
         private Long id;
+        private String orderNo;
         private Long productId;
         private Long machineId;
         private BigDecimal qty;
         private BigDecimal amountReceived;
+        private String payMethod;
         private String orderType;
         private LocalDateTime bizTime;
         private String bizPeriod;

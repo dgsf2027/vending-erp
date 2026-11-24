@@ -37,9 +37,27 @@ public interface ReportQueryMapper {
     List<Map<String, Object>> productRefCosts();
 
     /** 成本引擎输入②:全部销售事件(含未绑定行 product_id NULL,单独出「未绑定」聚合行) */
-    @Select("SELECT id, product_id, machine_id, qty, amount_received, order_type, biz_time, biz_period " +
+    @Select("SELECT id, order_no, product_id, machine_id, qty, amount_received, pay_method, order_type, biz_time, biz_period " +
             "FROM yc_vend_sale_record WHERE is_deleted=0 ORDER BY biz_time, id")
     List<SaleEvent> saleEvents();
+
+    /** 驾驶舱采购/期初单据列表(与 systemPurchaseTotal 同口径) */
+    @Select("SELECT biz_date AS bizDate, book_period AS bookPeriod, doc_type AS docType, " +
+            "       COALESCE(total_qty, 0) AS totalQty, COALESCE(total_amount, 0) AS totalAmount " +
+            "FROM yc_vend_doc_head " +
+            "WHERE doc_type IN ('期初', '采购入库') " +
+            "  AND doc_status NOT IN ('已作废', '已红冲', '草稿', '待确认') " +
+            "  AND is_deleted = 0 " +
+            "ORDER BY biz_date, id")
+    List<top.aole.vend.modules.report.dto.DashboardDtos.PurchaseDocEvent> dashboardPurchaseDocs();
+
+    /** 厂家补贴按月汇总(已抵扣确认单按结算单入账月归月) */
+    @Select("SELECT b.book_period AS period, COALESCE(SUM(d.amount), 0) AS amount " +
+            "FROM yc_vend_deduction d " +
+            "JOIN yc_vend_settle_bill b ON b.id = d.used_settle_bill_id " +
+            "WHERE d.ded_status = '已抵扣' AND d.is_deleted = 0 AND b.is_deleted = 0 " +
+            "GROUP BY b.book_period")
+    List<Map<String, Object>> subsidyUsedAllPeriods();
 
     /** 数据截至水印:流水/销售/机器快照三处最大业务时间 */
     @Select("SELECT GREATEST(" +
