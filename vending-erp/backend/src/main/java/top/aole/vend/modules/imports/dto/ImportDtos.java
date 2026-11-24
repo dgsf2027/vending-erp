@@ -297,4 +297,36 @@ public final class ImportDtos {
         private int rebound;
         private int stillPending;
     }
+
+    /** 清空导入销售数据前预览 */
+    @Data
+    public static class ClearSalesPreviewResp {
+        private long saleCount;
+        private BigDecimal totalAmount;
+        private String firstBizDate;
+        private String lastBizDate;
+        private long batchCount;
+        private long settledCount;
+        private long pendingAliasCount;
+        private long offlineKeptCount;
+    }
+
+    /** 清空导入销售数据请求(需二次口令确认) */
+    @Data
+    public static class ClearSalesReq {
+        @NotBlank(message = "请输入确认口令「确认清空销售数据」")
+        private String confirmText;
+        /** 若已有记录关联平台结算单,勾选后一并清理销售记录 */
+        private boolean unlinkSettlement;
+    }
+
+    /** 清空导入销售数据结果 */
+    @Data
+    public static class ClearSalesResp {
+        private int saleRemoved;
+        private int batchesRolledBack;
+        private int pendingAliasCleared;
+        private int importErrorsIgnored;
+        private long offlineKept;
+    }
 }

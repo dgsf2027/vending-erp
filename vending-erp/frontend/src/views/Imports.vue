@@ -20,6 +20,7 @@ import {
   type ValidateResp,
 } from '@/api/imports'
 import AliasPendingDrawer from '@/components/basedata/AliasPendingDrawer.vue'
+import ClearSalesDataDialog from '@/components/imports/ClearSalesDataDialog.vue'
 import ImportFileDrawer from '@/components/imports/ImportFileDrawer.vue'
 import SalesImportReview from '@/components/imports/SalesImportReview.vue'
 import SmartProductImportDialog from '@/components/basedata/SmartProductImportDialog.vue'
@@ -257,22 +258,48 @@ async function loadBatches() {
   }
 }
 
+const clearSalesVisible = ref(false)
+function onSalesCleared() {
+  lastResult.value = null
+  preview.value = null
+  previewVisible.value = false
+  loadBatches()
+}
+
 async function doDeleteBatch(row: ImportBatch) {
   if (deletingBatchId.value !== null || row.batchStatus === '处理中') return
   deletingBatchId.value = row.id
+  const willCascade =
+    row.batchStatus === '已导入' &&
+    ['出货明细', '期初-历史销售', '系统补货记录', '期初-历史采购'].includes(row.fileType)
   try {
     await ElMessageBox.confirm(
-      `删除批次「${row.batchNo}」的历史记录？已导入的销售、库存和商品数据会保留。删除后将无法从历史列表操作该批次；如需撤销导入数据，请先取消并使用“回滚”。`,
-      '确认删除批次历史',
-      { type: 'warning', confirmButtonText: '删除历史', cancelButtonText: '取消' },
+      willCascade
+        ? `删除批次「${row.batchNo}」？系统将自动同步删除该批导入的全部关联业务数据（销售记录 / 补货单 / 库存流水等），经营驾驶舱与报表数据也将相应减少。`
+        : `删除批次「${row.batchNo}」的历史记录？（商品档案与别名或已回滚批次不会受影响）`,
+      willCascade ? '确认删除批次及关联数据' : '确认删除历史记录',
+      { type: 'warning', confirmButtonText: willCascade ? '删除并清理数据' : '删除历史', cancelButtonText: '取消' },
     )
-    await importsApi.deleteBatch(row.id)
+    const resp = await importsApi.deleteBatch(row.id)
     if (lastResult.value?.batchId === row.id) lastResult.value = null
-    ElMessage.success('批次历史已删除，已导入数据保留')
+    if (willCascade && resp) {
+      const parts: string[] = []
+      if (resp.saleRemoved) parts.push(`销售记录 -${resp.saleRemoved} 条`)
+      if (resp.docsVoided) parts.push(`单据作废 ${resp.docsVoided} 张`)
+      if (resp.ledgerRemoved) parts.push(`库存流水 -${resp.ledgerRemoved} 条`)
+      if (resp.snapshotRemoved) parts.push(`快照 -${resp.snapshotRemoved} 条`)
+      ElMessage.success(
+        parts.length
+          ? `已删除批次并同步清除：${parts.join(' · ')}，经营驾驶舱与报表已更新`
+          : '已删除批次并同步清除关联数据',
+      )
+    } else {
+      ElMessage.success('批次历史记录已删除')
+    }
     await loadBatches()
   } catch (error) {
     // 取消/关闭确认框无需提示;接口错误由统一请求拦截器展示。
-    if (error !== 'cancel' && error !== 'close') console.error('删除批次历史失败', error)
+    if (error !== 'cancel' && error !== 'close') console.error('删除批次失败', error)
   } finally {
     deletingBatchId.value = null
   }
@@ -554,9 +581,20 @@ function showNewProducts(products: import('@/api/imports').AutoCreatedProduct[])
       </div>
       <div v-if="activeChannel" class="page-links">
         <el-button @click="router.push('/import')">返回导入中心</el-button>
+        <el-button
+          v-if="activeChannel.key === 'sales'"
+          type="danger"
+          plain
+          @click="clearSalesVisible = true"
+        >
+          🗑️ 清空已导入销售数据
+        </el-button>
         <el-button type="primary" plain @click="router.push(activeChannel.relatedPath)">{{ activeChannel.relatedLabel }}</el-button>
       </div>
-      <el-button v-else @click="openAllHistory">{{ showHistory ? '收起全部导入记录' : '查看全部导入记录' }}</el-button>
+      <div v-else class="page-links">
+        <el-button type="danger" plain @click="clearSalesVisible = true">🗑️ 清空已导入销售数据</el-button>
+        <el-button @click="openAllHistory">{{ showHistory ? '收起全部导入记录' : '查看全部导入记录' }}</el-button>
+      </div>
     </div>
 
     <div v-if="!activeChannel" class="import-channels">
@@ -756,7 +794,7 @@ function showNewProducts(products: import('@/api/imports').AutoCreatedProduct[])
                       回滚导入数据
                     </el-dropdown-item>
                     <el-dropdown-item command="delete" :divided="!canRollback(row)" class="batch-danger-action">
-                      删除批次历史
+                      {{ canRollback(row) ? '删除批次及导入数据' : '删除历史记录' }}
                     </el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
@@ -777,6 +815,7 @@ function showNewProducts(products: import('@/api/imports').AutoCreatedProduct[])
     </div>
 
     <ImportFileDrawer v-model="fileVisible" :batch="fileBatch" />
+    <ClearSalesDataDialog v-model="clearSalesVisible" @cleared="onSalesCleared" />
 
     <!-- 预览确认对话框(两步式第②步) -->
     <el-dialog v-model="previewVisible" class="import-preview-dialog" :title="`预览核对 · ${preview?.fileName ?? ''}`" width="min(1120px, 96vw)" top="4vh"

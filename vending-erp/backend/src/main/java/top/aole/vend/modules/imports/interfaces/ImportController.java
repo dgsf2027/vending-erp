@@ -21,6 +21,7 @@ import top.aole.vend.modules.imports.domain.entity.ImportError;
 import top.aole.vend.modules.imports.service.ImportService;
 import top.aole.vend.modules.imports.service.ImportFixService;
 import top.aole.vend.modules.imports.service.ImportArchiveService;
+import top.aole.vend.modules.imports.service.SalesDataClearService;
 
 import javax.validation.Valid;
 import javax.servlet.http.HttpServletResponse;
@@ -41,6 +42,7 @@ public class ImportController {
     private final ImportService importService;
     private final ImportFixService importFixService;
     private final ImportArchiveService importArchiveService;
+    private final SalesDataClearService salesDataClearService;
 
     @ApiOperation("导入自愈:AI 猜列映射(厂家改模板→期望列对到实际表头)")
     @PostMapping("/fix/suggest")
@@ -126,12 +128,11 @@ public class ImportController {
         }
     }
 
-    @ApiOperation("删除批次历史(保留已导入数据及来源记录)")
+    @ApiOperation("删除导入批次并自动清除关联业务数据(销售/补货/库存流水等)")
     @DeleteMapping("/batches/{id}")
-    public R<Void> deleteBatch(@PathVariable Long id,
-                              @RequestHeader(value = Operators.HEADER, required = false) String userName) {
-        importService.deleteBatch(id, Operators.resolve(userName));
-        return R.ok();
+    public R<ImportDtos.RollbackResp> deleteBatch(@PathVariable Long id,
+                                                  @RequestHeader(value = Operators.HEADER, required = false) String userName) {
+        return R.ok(importService.deleteBatch(id, Operators.resolve(userName)));
     }
 
     @ApiOperation("批次行级错误分页")
@@ -168,5 +169,19 @@ public class ImportController {
                                           @Valid @RequestBody ImportDtos.PriceConfirmReq req,
                                           @RequestHeader(value = Operators.HEADER, required = false) String userName) {
         return R.ok(importService.confirmPriceChanges(id, req, Operators.resolve(userName)));
+    }
+
+    @ApiOperation("清空已导入销售数据前预览(统计记录数/批次数/涉及日期/已核销数)")
+    @GetMapping("/sales/clear-preview")
+    public R<ImportDtos.ClearSalesPreviewResp> clearSalesPreview() {
+        return R.ok(salesDataClearService.preview());
+    }
+
+    @ApiOperation("清空已导入销售数据(物理删销售记录+回滚销售批次,保留商品/采购/库存/线下补录,需口令确认)")
+    @PostMapping("/sales/clear")
+    public R<ImportDtos.ClearSalesResp> clearSales(
+            @Valid @RequestBody ImportDtos.ClearSalesReq req,
+            @RequestHeader(value = Operators.HEADER, required = false) String userName) {
+        return R.ok(salesDataClearService.clear(req, Operators.resolve(userName)));
     }
 }

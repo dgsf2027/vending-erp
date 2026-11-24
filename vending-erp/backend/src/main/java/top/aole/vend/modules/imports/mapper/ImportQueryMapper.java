@@ -3,6 +3,7 @@ package top.aole.vend.modules.imports.mapper;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -70,4 +71,9 @@ public interface ImportQueryMapper {
             "  WHERE d.import_batch_id=#{batchId} AND l2.is_deleted=0) " +
             "GROUP BY l.product_id, p.sku_code, p.product_name HAVING SUM(l.change_qty) < 0")
     List<Map<String, Object>> negativeWarehouseOfBatch(@Param("batchId") Long batchId);
+
+    /** 回滚/删除销售导入批次时清理该批遗留的待绑定别名红灯 */
+    @Update("UPDATE yc_vend_alias_pending SET pending_status='忽略' " +
+            "WHERE first_batch_id=#{batchId} AND pending_status IN ('待绑定','待处理') AND is_deleted=0")
+    int ignorePendingAliasesByBatch(@Param("batchId") Long batchId);
 }

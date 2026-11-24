@@ -191,6 +191,25 @@ export interface ReprocessResp {
   stillPending: number
 }
 
+export interface ClearSalesPreviewResp {
+  saleCount: number
+  totalAmount: number
+  firstBizDate: string | null
+  lastBizDate: string | null
+  batchCount: number
+  settledCount: number
+  pendingAliasCount: number
+  offlineKeptCount: number
+}
+
+export interface ClearSalesResp {
+  saleRemoved: number
+  batchesRolledBack: number
+  pendingAliasCleared: number
+  importErrorsIgnored: number
+  offlineKept: number
+}
+
 export interface PageResult<T> {
   records: T[]
   total: number
@@ -331,8 +350,18 @@ export const importsApi = {
   downloadFile(batchId: number): Promise<Blob> {
     return request.get(`/v1/imports/batches/${batchId}/file`, { responseType: 'blob', timeout: 60000 })
   },
-  deleteBatch(batchId: number): Promise<void> {
+  deleteBatch(batchId: number): Promise<RollbackResp> {
     return request.delete(`/v1/imports/batches/${batchId}`, { headers: operatorHeader() })
+  },
+  clearSalesPreview(): Promise<ClearSalesPreviewResp> {
+    return request.get('/v1/imports/sales/clear-preview')
+  },
+  clearSales(confirmText: string, unlinkSettlement = false): Promise<ClearSalesResp> {
+    return request.post(
+      '/v1/imports/sales/clear',
+      { confirmText, unlinkSettlement },
+      { headers: operatorHeader(), timeout: 120000 },
+    )
   },
   errors(batchId: number, current = 1, size = 50): Promise<PageResult<ImportError>> {
     return request.get(`/v1/imports/batches/${batchId}/errors`, { params: { current, size } })

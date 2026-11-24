@@ -1118,17 +1118,33 @@ public class ImportService {
     }
 
     /**
-     * 仅删除历史展示,不撤销导入数据。不能使用全局逻辑删除:期初防重、任务完成校验仍需来源批次。
-     * 原始文件、错误记录、业务关联和 batch_status 保留,操作日志记录删除人及前后状态。
+     * 删除导入批次并自动级联清除该批关联业务数据(销售记录/补货转移单/库存流水/机器快照等),
+     * 使经营驾驶舱与报表数据同步减少;商品/别名类主档案批次仅隐藏历史,保留商品档案与别名。
+     * 若关联数据已被下游引用(如平台已结算/已红冲/已付款),则整笔事务拒绝删除并列出引用。
      */
     @Transactional(rollbackFor = Exception.class)
-    public void deleteBatch(Long batchId, String operator) {
+    public RollbackResp deleteBatch(Long batchId, String operator) {
         ImportBatch batch = mustGetBatch(batchId);
         if (ImportBatch.STATUS_PROCESSING.equals(batch.getBatchStatus())) {
-            throw new BizException("批次正在处理中,请等待导入完成后再删除历史");
+            throw new BizException("批次正在处理中,请等待导入完成后再删除");
         }
         if (Integer.valueOf(ImportBatch.HISTORY_HIDDEN).equals(batch.getStatus())) {
-            return;
+            RollbackResp noop = new RollbackResp();
+            noop.setSuccess(true);
+            return noop;
+        }
+        RollbackResp cascade = new RollbackResp();
+        cascade.setSuccess(true);
+        boolean cascadeType = ImportBatch.TYPE_SALE.equals(batch.getFileType())
+                || ImportBatch.TYPE_INITIAL_SALE.equals(batch.getFileType())
+                || ImportBatch.TYPE_REPLENISH.equals(batch.getFileType())
+                || ImportBatch.TYPE_INITIAL_PURCHASE.equals(batch.getFileType());
+        if (cascadeType && ImportBatch.STATUS_IMPORTED.equals(batch.getBatchStatus())) {
+            cascade = rollback(batchId, operator);
+            if (!cascade.isSuccess()) {
+                throw new BizException("无法删除该导入批次,相关数据已被下游引用:"
+                        + String.join(";", cascade.getBlockers()));
+            }
         }
         int changed = batchMapper.update(null, new LambdaUpdateWrapper<ImportBatch>()
                 .eq(ImportBatch::getId, batchId)
@@ -1137,9 +1153,10 @@ public class ImportService {
                 .set(ImportBatch::getStatus, ImportBatch.HISTORY_HIDDEN)
                 .set(ImportBatch::getUpdateUser, IMPORT_USER));
         if (changed > 0) {
-            opLogService.record(operator, "删除批次历史", "import_batch", batchId,
+            opLogService.record(operator, "删除批次及关联数据", "import_batch", batchId,
                     batch, batchMapper.selectById(batchId));
         }
+        return cascade;
     }
 
     public Page<ImportError> pageErrors(Long batchId, long current, long size) {
@@ -1190,6 +1207,11 @@ public class ImportService {
             }
             int removed = saleRecordMapper.delete(new LambdaQueryWrapper<SaleRecord>()
                     .eq(SaleRecord::getImportBatchId, batchId));
+            queryMapper.ignorePendingAliasesByBatch(batchId);
+            errorMapper.update(null, new LambdaUpdateWrapper<ImportError>()
+                    .eq(ImportError::getBatchId, batchId)
+                    .eq(ImportError::getResolveStatus, "待处理")
+                    .set(ImportError::getResolveStatus, "已忽略"));
             resp.setSaleRemoved(removed);
         }
 

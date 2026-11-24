@@ -13,6 +13,7 @@ import {
   type ReplenishConfig,
 } from '@/api/basedata'
 import ProductSelect from './ProductSelect.vue'
+import ClearSalesDataDialog from '@/components/imports/ClearSalesDataDialog.vue'
 
 /**
  * 参数与阈值 Tab:全局 (R,S) 参数 + 按 SKU/机器覆盖行。
@@ -34,6 +35,7 @@ const saving = ref(false)
 // 覆盖行编辑弹窗
 const ovVisible = ref(false)
 const ovForm = reactive<ReplenishConfig>({ machineId: 0, productId: 0 })
+const clearSalesVisible = ref(false)
 
 async function load() {
   const [global, all, logPage, machinePage] = await Promise.all([
@@ -179,6 +181,20 @@ onMounted(load)
         </template>
       </el-table>
     </div>
+
+    <div class="ledger-card" style="margin-top: 14px; border-left: 3px solid var(--red)">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap">
+        <div>
+          <h3 style="margin: 0">🧹 销售数据维护 <span class="hint">重新录入销售表前一键清空已导入销售记录</span></h3>
+          <p class="mini" style="margin: 6px 0 0; color: var(--ink2)">
+            仅清空导入产生的销售数据并同步回滚销售批次，完整保留商品档案、别名、采购入库、库存流水及手工线下补录。
+          </p>
+        </div>
+        <el-button type="danger" plain @click="clearSalesVisible = true">🗑️ 清空已导入销售数据</el-button>
+      </div>
+    </div>
+
+    <ClearSalesDataDialog v-model="clearSalesVisible" />
 
     <el-dialog v-model="ovVisible" title="参数覆盖行" width="500px">
       <el-form label-width="110px">

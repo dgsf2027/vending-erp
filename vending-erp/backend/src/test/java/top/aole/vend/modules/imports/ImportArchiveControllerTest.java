@@ -19,6 +19,7 @@ import top.aole.vend.modules.imports.mapper.ImportBatchMapper;
 import top.aole.vend.modules.imports.service.ImportArchiveService;
 import top.aole.vend.modules.imports.service.ImportFixService;
 import top.aole.vend.modules.imports.service.ImportService;
+import top.aole.vend.modules.imports.service.SalesDataClearService;
 
 import java.io.OutputStream;
 import java.nio.file.Files;
@@ -56,7 +57,7 @@ class ImportArchiveControllerTest {
         ReflectionTestUtils.setField(tokens, "ttlSeconds", 3600L);
         authorization = "Bearer " + tokens.issue(9L, "测试员", "老板");
         mvc = MockMvcBuilders.standaloneSetup(new ImportController(mock(ImportService.class),
-                        mock(ImportFixService.class), archives))
+                        mock(ImportFixService.class), archives, mock(SalesDataClearService.class)))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .addFilters(new AuthGateFilter(tokens)).build();
     }
