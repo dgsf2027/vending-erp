@@ -38,7 +38,7 @@ export interface ProductLinkPreview {
   source: Product; target: Product; salesCount: number; aliasCount: number
   requestedSourceId: number; requestedTargetId: number; directionReason: string
   salesQty: number | string; salesAmount: number | string; salesNames: string[]
-  blockers: string[]; executable: boolean; token: string
+  blockers: string[]; autoClean: string[]; executable: boolean; token: string
 }
 export function productLinkCandidates(id: number): Promise<Product[]> {
   return request.get(`/v1/basedata/products/${id}/link/candidates`)

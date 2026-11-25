@@ -32,7 +32,11 @@ class ProductLinkServiceTest {
         db.execute("CREATE TABLE yc_vend_period_lock(id bigint AUTO_INCREMENT PRIMARY KEY,tenant_id varchar DEFAULT '000000',period varchar,is_deleted int DEFAULT 0)");
         for(String t:new String[]{"doc_item","stock_ledger","machine_stock_snapshot","purchase_order_item","stocktake_item","prekit_ticket_item","replenish_plan","replenish_config","slot"})
             db.execute("CREATE TABLE yc_vend_"+t+"(id bigint AUTO_INCREMENT PRIMARY KEY,tenant_id varchar DEFAULT '000000',product_id bigint,is_deleted int DEFAULT 0)");
-        db.execute("CREATE TABLE test_lock(id int PRIMARY KEY)");db.update("INSERT INTO test_lock VALUES(1)");
+                db.execute("CREATE TABLE yc_vend_stocktake(id bigint AUTO_INCREMENT PRIMARY KEY,tenant_id varchar DEFAULT '000000',st_no varchar,st_status varchar,is_deleted int DEFAULT 0)");
+        for(String col:new String[]{"stocktake_id bigint","slot_no varchar","book_qty decimal(18,3)","actual_qty decimal(18,3)","diff_qty decimal(18,3)","diff_amount decimal(18,2)"})
+            db.execute("ALTER TABLE yc_vend_stocktake_item ADD COLUMN "+col);
+        db.execute("ALTER TABLE yc_vend_replenish_plan ADD COLUMN plan_status varchar DEFAULT '建议'");
+db.execute("CREATE TABLE test_lock(id int PRIMARY KEY)");db.update("INSERT INTO test_lock VALUES(1)");
         db.update("INSERT INTO yc_vend_product(id,sku_code,product_name,unit,box_spec,product_status,ref_price,ref_cost) VALUES(1,'YQ000001','达利园青梅绿茶500ml','瓶',15,'在售',3,2)");
         db.update("INSERT INTO yc_vend_product(id,sku_code,product_name,barcode,unit,box_spec,product_status,remark) VALUES(26,'YQ000026','500ml达利园青梅绿茶','BAR26','件',0,'在售','销售导入自动建档；箱规待补')");
         db.update("INSERT INTO yc_vend_sale_record(product_id,alias_name_raw,qty,amount_received,biz_period,book_period) VALUES(26,'500ml达利园青梅绿茶',3,8.4,'2026-11','2026-11')");
@@ -65,8 +69,8 @@ class ProductLinkServiceTest {
         }
         int before=db.queryForObject("SELECT COUNT(*) FROM yc_vend_sku_alias",Integer.class);service.link(26L,1L,p.getToken(),"重试");assertEquals(before,db.queryForObject("SELECT COUNT(*) FROM yc_vend_sku_alias",Integer.class));
     }
-    @ParameterizedTest @ValueSource(strings={"doc_item","stock_ledger","machine_stock_snapshot","purchase_order_item","stocktake_item","prekit_ticket_item","replenish_plan","replenish_config","slot"})
-    void refusesExistingIndependentRecordsEvenArchived(String table){db.update("INSERT INTO yc_vend_"+table+"(product_id,is_deleted) VALUES(26,1)");assertFalse(service.preview(26L,1L).isExecutable());assertThrows(BizException.class,()->service.link(26L,1L,"旧预览","测试"));untouched();}
+    @ParameterizedTest @ValueSource(strings={"doc_item","stock_ledger","machine_stock_snapshot","purchase_order_item","prekit_ticket_item","slot"})
+    void refusesHardRecordsEvenArchived(String table){db.update("INSERT INTO yc_vend_"+table+"(product_id,is_deleted) VALUES(26,1)");assertFalse(service.preview(26L,1L).isExecutable());assertThrows(BizException.class,()->service.link(26L,1L,"旧预览","测试"));untouched();}
     @Test void refusesSettledAndLockedSales(){db.update("UPDATE yc_vend_sale_record SET settlement_id=1");assertFalse(service.preview(26L,1L).isExecutable());db.update("UPDATE yc_vend_sale_record SET settlement_id=NULL");db.update("INSERT INTO yc_vend_period_lock(period) VALUES('2026-11')");assertFalse(service.preview(26L,1L).isExecutable());untouched();}
     @Test void refusesSelfCapacityAndExistingOwner(){assertFalse(service.preview(26L,26L).isExecutable());db.update("UPDATE yc_vend_product SET product_name='青梅绿茶1L' WHERE id=26");assertFalse(service.preview(26L,1L).isExecutable());db.update("UPDATE yc_vend_product SET stock_owner_id=99 WHERE id=1");assertFalse(service.preview(26L,1L).isExecutable());untouched();}
     @Test void refusesAliasHijack(){db.update("INSERT INTO yc_vend_sku_alias(product_id,alias_code) VALUES(99,'YQ000026')");assertFalse(service.preview(26L,1L).isExecutable());untouched();}
@@ -104,5 +108,30 @@ class ProductLinkServiceTest {
         assertThrows(BizException.class,()->service.link(26L,1L,token,"测试"));
         db.update("UPDATE yc_vend_sale_record SET qty=5");
         assertThrows(BizException.class,()->service.link(1L,26L,token,"测试"));untouched();
+    }
+
+    @Test void mergesDraftStocktakeAndClearsPlansInsteadOfBlocking(){
+        db.update("INSERT INTO yc_vend_stocktake(id,st_no,st_status) VALUES(5,'PD-1','进行中')");
+        db.update("INSERT INTO yc_vend_stocktake_item(stocktake_id,product_id,book_qty,actual_qty) VALUES(5,1,-67,-67),(5,26,-1,-1)");
+        db.update("INSERT INTO yc_vend_replenish_plan(product_id,plan_status) VALUES(26,'建议')");
+        ProductLinkService.Preview p=service.preview(26L,1L);
+        assertTrue(p.isExecutable(),p.getBlockers().toString());
+        assertFalse(p.getAutoClean().isEmpty());
+        service.link(26L,1L,p.getToken(),"测试");
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM yc_vend_stocktake_item WHERE product_id=26 AND is_deleted=0",Integer.class));
+        assertEquals(0,new BigDecimal("-68").compareTo(db.queryForObject("SELECT book_qty FROM yc_vend_stocktake_item WHERE product_id=1 AND is_deleted=0",BigDecimal.class)));
+        assertEquals(0,db.queryForObject("SELECT COUNT(*) FROM yc_vend_replenish_plan WHERE is_deleted=0",Integer.class));
+    }
+    @Test void completedStocktakeStillBlocks(){
+        db.update("INSERT INTO yc_vend_stocktake(id,st_no,st_status) VALUES(6,'PD-2','已完成')");
+        db.update("INSERT INTO yc_vend_stocktake_item(stocktake_id,product_id,book_qty,actual_qty) VALUES(6,26,-1,-1)");
+        assertFalse(service.preview(26L,1L).isExecutable());
+        assertThrows(BizException.class,()->service.link(26L,1L,"旧预览","测试"));
+        untouched();
+    }
+    @Test void adoptedPlanStillBlocks(){
+        db.update("INSERT INTO yc_vend_replenish_plan(product_id,plan_status) VALUES(26,'已采纳')");
+        assertFalse(service.preview(26L,1L).isExecutable());
+        untouched();
     }
 }

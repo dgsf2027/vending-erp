@@ -74,6 +74,9 @@ async function confirm() {
         <el-alert v-if="!preview.executable" type="warning" title="这两份档案仍需核对" :closable="false" show-icon>
           <p v-for="reason in preview.blockers" :key="reason">{{ reason }}</p>
         </el-alert>
+        <el-alert v-if="preview.autoClean?.length" type="info" title="归并时会自动处理这些草稿记录" :closable="false" show-icon style="margin-top: 8px">
+          <p v-for="item in preview.autoClean" :key="item">{{ item }}</p>
+        </el-alert>
         <template v-else>
           <div class="summary"><strong>统一使用 {{ preview.target.skuCode }} · {{ preview.target.productName }}</strong>
             <p>{{ preview.directionReason }}</p>
